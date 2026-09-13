@@ -8,7 +8,7 @@ use crate::SCHEMA_VERSION_V1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DiscoverySnapshotContract {
+pub struct DiscoverySnapshot {
     pub schema_version: String,
     pub snapshot_id: String,
     pub revision: u64,
@@ -21,7 +21,7 @@ pub struct DiscoverySnapshotContract {
     pub targets: Vec<DiscoveredTarget>,
 }
 
-impl DiscoverySnapshotContract {
+impl DiscoverySnapshot {
     pub fn new(snapshot_id: String, revision: u64, generated_at: String) -> Self {
         Self {
             schema_version: SCHEMA_VERSION_V1.to_string(),

@@ -6,7 +6,7 @@ use crate::SCHEMA_VERSION_V1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TelemetryRecordContract {
+pub struct TelemetryRecord {
     pub schema_version: String,
     /// 生产者全局唯一 ID（复合键 `(agent, seq)`）；旧数据无此字段时反序列化为空串。
     #[serde(default)]
@@ -24,7 +24,7 @@ pub struct TelemetryRecordContract {
     pub seq: u64,
 }
 
-impl TelemetryRecordContract {
+impl TelemetryRecord {
     #[allow(clippy::too_many_arguments)]
     pub fn new_log(
         agent_id: String,
@@ -65,8 +65,8 @@ pub struct DataFrame {
     pub seq: u64,
 }
 
-impl From<&TelemetryRecordContract> for DataFrame {
-    fn from(record: &TelemetryRecordContract) -> Self {
+impl From<&TelemetryRecord> for DataFrame {
+    fn from(record: &TelemetryRecord) -> Self {
         Self {
             schema_version: record.schema_version.clone(),
             agent_id: record.agent_id.clone(),
@@ -79,7 +79,7 @@ impl From<&TelemetryRecordContract> for DataFrame {
 impl DataFrame {
     /// 新建一帧数据帧信封（信号无关，`schema` 固定为 v1）。
     ///
-    /// 用于无 `TelemetryRecordContract` 的信号（如指标），调用方自定 `seq`。
+    /// 用于无 `TelemetryRecord` 的信号（如指标），调用方自定 `seq`。
     pub fn new(agent_id: impl Into<String>, observed_at: impl Into<String>, seq: u64) -> Self {
         Self {
             schema_version: SCHEMA_VERSION_V1.to_string(),
@@ -92,10 +92,10 @@ impl DataFrame {
 
 #[cfg(test)]
 mod tests {
-    use super::{DataFrame, TelemetryRecordContract};
+    use super::{DataFrame, TelemetryRecord};
 
-    fn record() -> TelemetryRecordContract {
-        TelemetryRecordContract::new_log(
+    fn record() -> TelemetryRecord {
+        TelemetryRecord::new_log(
             "agent-001".to_string(),
             "2026-04-14T00:00:00Z".to_string(),
             "input-a".to_string(),
@@ -111,7 +111,7 @@ mod tests {
     fn round_trips_json() {
         let record = record();
         let encoded = serde_json::to_string(&record).expect("serialize");
-        let decoded: TelemetryRecordContract = serde_json::from_str(&encoded).expect("deserialize");
+        let decoded: TelemetryRecord = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded, record);
         assert_eq!(decoded.agent_id, "agent-001");
         assert_eq!(decoded.schema_version, "v1");
@@ -122,7 +122,7 @@ mod tests {
     fn old_record_without_agent_id_and_seq_deserializes() {
         // 旧数据：无 agent_id、无 seq，应退化为空串 / 0（#[serde(default)] 向后兼容）。
         let json = r#"{"schema_version":"v1","observed_at":"2026-04-14T00:00:00Z","input_id":"app","source_path":"/tmp/app.log","body":"raw","file_offset":0,"file_offset_end":8}"#;
-        let decoded: TelemetryRecordContract = serde_json::from_str(json).expect("deserialize");
+        let decoded: TelemetryRecord = serde_json::from_str(json).expect("deserialize");
         assert_eq!(decoded.agent_id, "");
         assert_eq!(decoded.seq, 0);
         assert_eq!(decoded.input_id, "app");
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn rejects_unknown_fields() {
         let json = r#"{"schema_version":"v1","agent_id":"a","observed_at":"t","input_id":"i","source_path":"p","body":"b","file_offset":0,"file_offset_end":1,"seq":0,"extra":true}"#;
-        assert!(serde_json::from_str::<TelemetryRecordContract>(json).is_err());
+        assert!(serde_json::from_str::<TelemetryRecord>(json).is_err());
     }
 
     #[test]

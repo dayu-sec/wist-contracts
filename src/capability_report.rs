@@ -6,7 +6,7 @@ use crate::SCHEMA_VERSION_V1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CapabilityReportContract {
+pub struct CapabilityReport {
     pub schema_version: String,
     pub agent_id: String,
     pub instance_id: String,
@@ -30,7 +30,7 @@ pub struct CapabilityReportSections {
     pub limits: CapabilityLimits,
 }
 
-impl CapabilityReportContract {
+impl CapabilityReport {
     pub fn new(sections: CapabilityReportSections) -> Self {
         Self {
             schema_version: SCHEMA_VERSION_V1.to_string(),

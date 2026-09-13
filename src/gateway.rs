@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::API_VERSION_V1;
-use crate::action_plan::ActionPlanContract;
-use crate::action_result::{ActionResultContract, FinalStatus};
+use crate::action_plan::ActionPlan;
+use crate::action_result::{ActionResult, FinalStatus};
 
 pub const DISPATCH_ACTION_PLAN_KIND: &str = "dispatch_action_plan";
 pub const ACTION_PLAN_ACK_KIND: &str = "action_plan_ack";
@@ -52,11 +52,11 @@ pub struct DispatchActionPlan {
     pub api_version: String,
     pub kind: String,
     pub dispatch_id: String,
-    pub plan: ActionPlanContract,
+    pub plan: ActionPlan,
 }
 
 impl DispatchActionPlan {
-    pub fn new(dispatch_id: String, plan: ActionPlanContract) -> Self {
+    pub fn new(dispatch_id: String, plan: ActionPlan) -> Self {
         Self {
             api_version: API_VERSION_V1.to_string(),
             kind: DISPATCH_ACTION_PLAN_KIND.to_string(),
@@ -228,7 +228,7 @@ pub struct ReportActionResult {
     pub instance_id: String,
     pub result_attestation: ResultAttestation,
     pub reported_at: String,
-    pub result: ActionResultContract,
+    pub result: ActionResult,
 }
 
 impl ReportActionResult {
@@ -244,7 +244,7 @@ impl ReportActionResult {
         instance_id: String,
         result_attestation: ResultAttestation,
         reported_at: String,
-        result: ActionResultContract,
+        result: ActionResult,
     ) -> Self {
         Self {
             api_version: API_VERSION_V1.to_string(),

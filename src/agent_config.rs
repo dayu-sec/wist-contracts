@@ -6,7 +6,7 @@ use crate::SCHEMA_VERSION_V1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentConfigContract {
+pub struct AgentConfig {
     pub schema_version: String,
     #[serde(default)]
     pub agent: AgentSection,
@@ -22,7 +22,7 @@ pub struct AgentConfigContract {
     pub discovery: DiscoverySection,
 }
 
-impl AgentConfigContract {
+impl AgentConfig {
     pub fn new(
         agent: AgentSection,
         control_plane: ControlPlaneSection,

@@ -9,21 +9,21 @@ pub const RENEW_AGENT_CREDENTIAL_KIND: &str = "renew_agent_credential";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SubmitEnrollmentRequest {
+pub struct EnrollmentRequest {
     pub api_version: String,
     pub kind: String,
     pub token: String,
     pub credential_request: String,
-    pub host_profile: AgentHostProfile,
+    pub host_profile: HostProfile,
     pub capability_summary: String,
     pub requested_at: String,
 }
 
-impl SubmitEnrollmentRequest {
+impl EnrollmentRequest {
     pub fn new(
         token: String,
         credential_request: String,
-        host_profile: AgentHostProfile,
+        host_profile: HostProfile,
         capability_summary: String,
         requested_at: String,
     ) -> Self {
@@ -41,7 +41,7 @@ impl SubmitEnrollmentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentHostProfile {
+pub struct HostProfile {
     pub node_id: String,
     pub hostname: String,
     pub os: String,
@@ -55,24 +55,24 @@ pub struct AgentHostProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollmentEnvelope {
-    pub result: AgentEnrollmentResult,
+    pub result: EnrollmentOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentEnrollmentResult {
-    pub status: AgentEnrollmentResultStatus,
+pub struct EnrollmentOutcome {
+    pub status: EnrollmentStatus,
     pub reason_code: Option<String>,
     pub agent_id: Option<String>,
     pub instance_id: Option<String>,
     pub issued_identity: Option<AgentIdentity>,
-    pub credential_bundle: Option<AgentCredentialBundle>,
-    pub initial_config: Option<AgentInitialConfig>,
-    pub policy_binding: Option<AgentPolicyBinding>,
+    pub credential_bundle: Option<CredentialBundle>,
+    pub initial_config: Option<InitialConfig>,
+    pub policy_binding: Option<PolicyBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AgentEnrollmentResultStatus {
+pub enum EnrollmentStatus {
     #[serde(rename = "accepted")]
     Accepted,
     #[serde(rename = "rejected")]
@@ -108,7 +108,7 @@ pub enum AgentIdentityStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentCredentialBundle {
+pub struct CredentialBundle {
     pub credential_id: String,
     pub agent_id: String,
     pub instance_id: String,
@@ -124,7 +124,7 @@ pub struct AgentCredentialBundle {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RenewAgentCredential {
+pub struct CredentialRenewal {
     pub api_version: String,
     pub kind: String,
     pub agent_id: String,
@@ -133,7 +133,7 @@ pub struct RenewAgentCredential {
     pub requested_at: String,
 }
 
-impl RenewAgentCredential {
+impl CredentialRenewal {
     pub fn new(
         agent_id: String,
         instance_id: String,
@@ -153,13 +153,13 @@ impl RenewAgentCredential {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentCredentialRenewed {
-    pub credential_bundle: AgentCredentialBundle,
+pub struct CredentialRenewed {
+    pub credential_bundle: CredentialBundle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentInitialConfig {
+pub struct InitialConfig {
     pub schema_version: String,
     pub mode: String,
     pub gateway_endpoint: String,
@@ -169,7 +169,7 @@ pub struct AgentInitialConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentPolicyBinding {
+pub struct PolicyBinding {
     pub agent_id: String,
     pub policy_id: String,
     pub policy_version: String,
@@ -179,8 +179,8 @@ pub struct AgentPolicyBinding {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentEnrollmentResult, EnrollmentEnvelope, AgentEnrollmentResultStatus,
-        RENEW_AGENT_CREDENTIAL_KIND, RenewAgentCredential,
+        EnrollmentOutcome, EnrollmentEnvelope, EnrollmentStatus,
+        RENEW_AGENT_CREDENTIAL_KIND, CredentialRenewal,
     };
 
     #[test]
@@ -189,10 +189,10 @@ mod tests {
             serde_json::from_str(r#"{"result":{"status":"accepted","reason_code":null,"agent_id":"agent-1","instance_id":"host-a","issued_identity":null,"credential_bundle":null,"initial_config":null,"policy_binding":null}}"#)
                 .expect("decode");
 
-        assert_eq!(decoded.result.status, AgentEnrollmentResultStatus::Accepted);
+        assert_eq!(decoded.result.status, EnrollmentStatus::Accepted);
 
-        let encoded = serde_json::to_string(&AgentEnrollmentResult {
-            status: AgentEnrollmentResultStatus::PendingReview,
+        let encoded = serde_json::to_string(&EnrollmentOutcome {
+            status: EnrollmentStatus::PendingReview,
             reason_code: Some("manual_review".to_string()),
             agent_id: None,
             instance_id: None,
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn renew_agent_credential_uses_stable_wire_kind() {
-        let request = RenewAgentCredential::new(
+        let request = CredentialRenewal::new(
             "agent-a".to_string(),
             "instance-a".to_string(),
             "bearer".to_string(),
@@ -218,7 +218,7 @@ mod tests {
 
         assert!(encoded.contains(&format!("\"kind\":\"{RENEW_AGENT_CREDENTIAL_KIND}\"")));
 
-        let decoded: RenewAgentCredential = serde_json::from_str(&encoded).expect("decode");
+        let decoded: CredentialRenewal = serde_json::from_str(&encoded).expect("decode");
         assert_eq!(decoded.api_version, "v1");
         assert_eq!(decoded.kind, RENEW_AGENT_CREDENTIAL_KIND);
     }

@@ -7,7 +7,7 @@ use std::str;
 use serde::{Deserialize, Serialize};
 
 use crate::API_VERSION_V1;
-use crate::discovery::DiscoverySnapshotContract;
+use crate::discovery::DiscoverySnapshot;
 
 pub const DISCOVERY_REPORT_KIND: &str = "report_discovery_snapshot";
 pub const DISCOVERY_INGEST_ACK_KIND: &str = "discovery_ingest_ack";
@@ -29,7 +29,7 @@ pub struct DiscoveryReport {
     pub report_attempt: u32,
     pub report_mode: DiscoveryReportMode,
     pub reported_at: String,
-    pub snapshot: DiscoverySnapshotContract,
+    pub snapshot: DiscoverySnapshot,
 }
 
 impl DiscoveryReport {
@@ -41,7 +41,7 @@ impl DiscoveryReport {
         report_attempt: u32,
         report_mode: DiscoveryReportMode,
         reported_at: String,
-        snapshot: DiscoverySnapshotContract,
+        snapshot: DiscoverySnapshot,
     ) -> Self {
         Self {
             api_version: API_VERSION_V1.to_string(),
@@ -387,10 +387,10 @@ mod tests {
     use crate::API_VERSION_V1;
     use std::collections::BTreeMap;
 
-    use crate::discovery::{DiscoveredResource, DiscoveryOrigin, DiscoverySnapshotContract};
+    use crate::discovery::{DiscoveredResource, DiscoveryOrigin, DiscoverySnapshot};
 
-    fn sample_snapshot() -> DiscoverySnapshotContract {
-        let mut snapshot = DiscoverySnapshotContract::new(
+    fn sample_snapshot() -> DiscoverySnapshot {
+        let mut snapshot = DiscoverySnapshot::new(
             "discovery:1:2026-04-20T00:00:00Z".to_string(),
             1,
             "2026-04-20T00:00:00Z".to_string(),

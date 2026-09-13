@@ -9,7 +9,7 @@ pub const ACTION_RESULT_KIND: &str = "action_result";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ActionResultContract {
+pub struct ActionResult {
     pub api_version: String,
     pub kind: String,
     pub action_id: String,
@@ -19,12 +19,12 @@ pub struct ActionResultContract {
     pub exit_reason: Option<String>,
     pub step_records: Vec<StepRecord>,
     pub outputs: ActionOutputs,
-    pub resource_usage: Option<ExecutionResourceUsage>,
+    pub resource_usage: Option<ResourceUsage>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
 }
 
-impl ActionResultContract {
+impl ActionResult {
     pub fn new(action_id: String, execution_id: String, final_status: FinalStatus) -> Self {
         Self {
             api_version: API_VERSION_V1.to_string(),
@@ -82,7 +82,7 @@ pub struct StepRecord {
     pub error_code: Option<String>,
     pub stdout_summary: Option<String>,
     pub stderr_summary: Option<String>,
-    pub resource_usage: Option<ExecutionResourceUsage>,
+    pub resource_usage: Option<ResourceUsage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,7 +118,7 @@ pub struct ActionOutputItem {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExecutionResourceUsage {
+pub struct ResourceUsage {
     pub max_rss_bytes: Option<u64>,
     pub cpu_time_ms: Option<u64>,
     pub stdout_bytes: Option<u64>,

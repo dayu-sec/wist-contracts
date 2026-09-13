@@ -15,7 +15,7 @@ pub const STEP_KIND_ABORT: &str = "abort";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ActionPlanContract {
+pub struct ActionPlan {
     pub api_version: String,
     pub kind: String,
     pub meta: ActionPlanMeta,
@@ -24,7 +24,7 @@ pub struct ActionPlanContract {
     pub program: ActionPlanProgram,
 }
 
-impl ActionPlanContract {
+impl ActionPlan {
     pub fn new(
         meta: ActionPlanMeta,
         target: ActionPlanTarget,
