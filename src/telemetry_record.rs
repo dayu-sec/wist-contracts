@@ -1,4 +1,4 @@
-//! Minimal structured telemetry record contract types.
+//! Structured telemetry record contract types.
 
 use serde::{Deserialize, Serialize};
 

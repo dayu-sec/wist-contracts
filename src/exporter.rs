@@ -1,9 +1,9 @@
-//! Unified output envelope for warp-insight data exchange.
+//! Output envelope for wist data exchange.
 //!
 //! All external-facing output (discovery snapshots, metrics batches,
 //! and future event batches) uses this envelope. The envelope provides
 //! source identity, idempotency fields (`output_id` + `seq`), and
-//! kind-based payload routing for downstream consumers (warp-parse ETL).
+//! kind-based payload routing for downstream consumers (wist data plane).
 
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct ExporterOutput<T> {
     /// Schema identifier for the envelope itself.
-    /// Target spec value: "warp-insight/v1".
+    /// Target spec value: "wist/v1".
     pub api_version: String,
     /// Payload type discriminator: "disc_snap" / "metrics".
     pub kind: String,
@@ -68,7 +68,7 @@ impl<T> ExporterOutput<T> {
         payload: T,
     ) -> Self {
         Self {
-            api_version: "warp-insight/v1".to_string(),
+            api_version: "wist/v1".to_string(),
             kind: kind.to_string(),
             output_id,
             seq,
@@ -79,4 +79,4 @@ impl<T> ExporterOutput<T> {
     }
 }
 
-pub const EXPORTER_API_VERSION: &str = "warp-insight/v1";
+pub const EXPORTER_API_VERSION: &str = "wist/v1";

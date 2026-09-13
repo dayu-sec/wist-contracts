@@ -355,7 +355,7 @@ fn default_logs_spool_dir() -> String {
 }
 
 fn default_logs_output_file() -> String {
-    "log/warp-parse-records.ndjson".to_string()
+    "log/wist-records.ndjson".to_string()
 }
 
 fn default_logs_output_kind() -> String {

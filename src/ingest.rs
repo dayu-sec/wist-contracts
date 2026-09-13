@@ -1,4 +1,4 @@
-//! Warp Parse ingress protocol contracts and fixed-width ASCII head codec.
+//! wist ingest protocol contracts and fixed-width ASCII head codec.
 
 use std::error::Error;
 use std::fmt;
@@ -11,8 +11,8 @@ use crate::discovery::DiscoverySnapshotContract;
 
 pub const REPORT_DISCOVERY_SNAPSHOT_KIND: &str = "report_discovery_snapshot";
 pub const DISCOVERY_INGEST_ACK_KIND: &str = "discovery_ingest_ack";
-pub const WARP_PARSE_INGEST_HEAD_MAGIC: &str = "WPI1";
-pub const WARP_PARSE_INGEST_HEAD_LEN: usize = 64;
+pub const INGEST_HEAD_MAGIC: &str = "WII1";
+pub const INGEST_HEAD_LEN: usize = 64;
 const BODY_LEN_WIDTH: usize = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,28 +124,28 @@ pub enum DiscoveryIngestAckStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WarpParseIngestHead {
+pub struct IngestHead {
     pub version: u8,
-    pub message_kind: WarpParseIngestMessageKind,
-    pub encoding: WarpParseIngestEncoding,
-    pub compression: WarpParseIngestCompression,
+    pub message_kind: IngestMessageKind,
+    pub encoding: IngestEncoding,
+    pub compression: IngestCompression,
     pub body_len: u32,
     pub flags: u8,
 }
 
-impl WarpParseIngestHead {
+impl IngestHead {
     pub fn discovery_snapshot(body_len: u32) -> Self {
         Self {
             version: 1,
-            message_kind: WarpParseIngestMessageKind::DiscoverySnapshot,
-            encoding: WarpParseIngestEncoding::Json,
-            compression: WarpParseIngestCompression::None,
+            message_kind: IngestMessageKind::DiscoverySnapshot,
+            encoding: IngestEncoding::Json,
+            compression: IngestCompression::None,
             body_len,
             flags: 0,
         }
     }
 
-    pub fn encode(self) -> Result<[u8; WARP_PARSE_INGEST_HEAD_LEN], IngestHeadError> {
+    pub fn encode(self) -> Result<[u8; INGEST_HEAD_LEN], IngestHeadError> {
         if self.version == 0 || self.version > 9 {
             return Err(IngestHeadError::InvalidVersion(self.version));
         }
@@ -155,7 +155,7 @@ impl WarpParseIngestHead {
 
         let head = format!(
             "{magic};V={version};K={kind};E={encoding};C={compression};L={body_len:0width$};F={flags:02X};",
-            magic = WARP_PARSE_INGEST_HEAD_MAGIC,
+            magic = INGEST_HEAD_MAGIC,
             version = self.version,
             kind = self.message_kind.as_code(),
             encoding = self.encoding.as_code(),
@@ -168,17 +168,17 @@ impl WarpParseIngestHead {
         if !head.is_ascii() {
             return Err(IngestHeadError::NonAsciiHead);
         }
-        if head.len() > WARP_PARSE_INGEST_HEAD_LEN {
+        if head.len() > INGEST_HEAD_LEN {
             return Err(IngestHeadError::HeadTooLong(head.len()));
         }
 
-        let mut buf = [b' '; WARP_PARSE_INGEST_HEAD_LEN];
+        let mut buf = [b' '; INGEST_HEAD_LEN];
         buf[..head.len()].copy_from_slice(head.as_bytes());
         Ok(buf)
     }
 
     pub fn decode(input: &[u8]) -> Result<Self, IngestHeadError> {
-        if input.len() != WARP_PARSE_INGEST_HEAD_LEN {
+        if input.len() != INGEST_HEAD_LEN {
             return Err(IngestHeadError::InvalidHeadLen(input.len()));
         }
         if !input.is_ascii() {
@@ -193,16 +193,16 @@ impl WarpParseIngestHead {
             return Err(IngestHeadError::InvalidFieldLayout);
         }
 
-        if parts[0] != WARP_PARSE_INGEST_HEAD_MAGIC {
+        if parts[0] != INGEST_HEAD_MAGIC {
             return Err(IngestHeadError::InvalidMagic(parts[0].to_string()));
         }
 
         let version = parse_kv(parts[1], "V")?
             .parse::<u8>()
             .map_err(|_| IngestHeadError::InvalidVersionField(parts[1].to_string()))?;
-        let message_kind = WarpParseIngestMessageKind::from_code(parse_kv(parts[2], "K")?)?;
-        let encoding = WarpParseIngestEncoding::from_code(parse_kv(parts[3], "E")?)?;
-        let compression = WarpParseIngestCompression::from_code(parse_kv(parts[4], "C")?)?;
+        let message_kind = IngestMessageKind::from_code(parse_kv(parts[2], "K")?)?;
+        let encoding = IngestEncoding::from_code(parse_kv(parts[3], "E")?)?;
+        let compression = IngestCompression::from_code(parse_kv(parts[4], "C")?)?;
         let body_len_raw = parse_kv(parts[5], "L")?;
         if body_len_raw.len() != BODY_LEN_WIDTH || !body_len_raw.bytes().all(|b| b.is_ascii_digit())
         {
@@ -246,12 +246,12 @@ fn parse_kv<'a>(field: &'a str, key: &str) -> Result<&'a str, IngestHeadError> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WarpParseIngestMessageKind {
+pub enum IngestMessageKind {
     DiscoverySnapshot,
     DiscoveryIngestAck,
 }
 
-impl WarpParseIngestMessageKind {
+impl IngestMessageKind {
     pub fn as_code(self) -> &'static str {
         match self {
             Self::DiscoverySnapshot => "DSNAP",
@@ -269,11 +269,11 @@ impl WarpParseIngestMessageKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WarpParseIngestEncoding {
+pub enum IngestEncoding {
     Json,
 }
 
-impl WarpParseIngestEncoding {
+impl IngestEncoding {
     pub fn as_code(self) -> &'static str {
         match self {
             Self::Json => "JSON",
@@ -289,13 +289,13 @@ impl WarpParseIngestEncoding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WarpParseIngestCompression {
+pub enum IngestCompression {
     None,
     Gzip,
     Zstd,
 }
 
-impl WarpParseIngestCompression {
+impl IngestCompression {
     pub fn as_code(self) -> &'static str {
         match self {
             Self::None => "NONE",
@@ -381,8 +381,8 @@ mod tests {
     use super::{
         DISCOVERY_INGEST_ACK_KIND, DiscoveryIngestAck, DiscoveryIngestAckStatus,
         DiscoveryReportMode, REPORT_DISCOVERY_SNAPSHOT_KIND, ReportDiscoverySnapshot,
-        WARP_PARSE_INGEST_HEAD_LEN, WarpParseIngestCompression, WarpParseIngestEncoding,
-        WarpParseIngestHead, WarpParseIngestMessageKind,
+        INGEST_HEAD_LEN, IngestCompression, IngestEncoding,
+        IngestHead, IngestMessageKind,
     };
     use crate::API_VERSION_V1;
     use std::collections::BTreeMap;
@@ -491,50 +491,50 @@ mod tests {
 
     #[test]
     fn ingest_head_encodes_to_fixed_width_ascii() {
-        let encoded = WarpParseIngestHead::discovery_snapshot(18_432)
+        let encoded = IngestHead::discovery_snapshot(18_432)
             .encode()
             .expect("encode head");
         let head = std::str::from_utf8(&encoded).expect("utf8 head");
 
-        assert_eq!(encoded.len(), WARP_PARSE_INGEST_HEAD_LEN);
-        assert!(head.starts_with("WPI1;V=1;K=DSNAP;E=JSON;C=NONE;L=000018432;F=00;"));
+        assert_eq!(encoded.len(), INGEST_HEAD_LEN);
+        assert!(head.starts_with("WII1;V=1;K=DSNAP;E=JSON;C=NONE;L=000018432;F=00;"));
         assert!(encoded.is_ascii());
     }
 
     #[test]
     fn ingest_head_round_trips() {
-        let original = WarpParseIngestHead {
+        let original = IngestHead {
             version: 1,
-            message_kind: WarpParseIngestMessageKind::DiscoverySnapshot,
-            encoding: WarpParseIngestEncoding::Json,
-            compression: WarpParseIngestCompression::None,
+            message_kind: IngestMessageKind::DiscoverySnapshot,
+            encoding: IngestEncoding::Json,
+            compression: IngestCompression::None,
             body_len: 12_345,
             flags: 0,
         };
 
         let encoded = original.encode().expect("encode head");
-        let decoded = WarpParseIngestHead::decode(&encoded).expect("decode head");
+        let decoded = IngestHead::decode(&encoded).expect("decode head");
 
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn ingest_head_decode_rejects_wrong_field_order() {
-        let mut head = [b' '; WARP_PARSE_INGEST_HEAD_LEN];
-        let raw = b"WPI1;K=DSNAP;V=1;E=JSON;C=NONE;L=000000001;F=00;";
+        let mut head = [b' '; INGEST_HEAD_LEN];
+        let raw = b"WII1;K=DSNAP;V=1;E=JSON;C=NONE;L=000000001;F=00;";
         head[..raw.len()].copy_from_slice(raw);
 
-        let err = WarpParseIngestHead::decode(&head).expect_err("reject wrong order");
+        let err = IngestHead::decode(&head).expect_err("reject wrong order");
         assert!(err.to_string().contains("unexpected ingest head field"));
     }
 
     #[test]
     fn ingest_head_decode_rejects_unknown_message_kind() {
-        let mut head = [b' '; WARP_PARSE_INGEST_HEAD_LEN];
-        let raw = b"WPI1;V=1;K=OTHER;E=JSON;C=NONE;L=000000001;F=00;";
+        let mut head = [b' '; INGEST_HEAD_LEN];
+        let raw = b"WII1;V=1;K=OTHER;E=JSON;C=NONE;L=000000001;F=00;";
         head[..raw.len()].copy_from_slice(raw);
 
-        let err = WarpParseIngestHead::decode(&head).expect_err("reject unknown kind");
+        let err = IngestHead::decode(&head).expect_err("reject unknown kind");
         assert!(err.to_string().contains("unsupported ingest message kind"));
     }
 }

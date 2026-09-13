@@ -17,13 +17,14 @@ consumer.
 | `action_plan`       | The `ActionPlan` executed by `wist-exec`.            |
 | `action_result`     | The result of an execution.                          |
 | `agent_config`      | The `wist-agentd` runtime configuration (`agentd.toml`). |
+| `agent_state`       | Agent runtime state (identity, credentials, mode).   |
 | `capability_report` | Agent capability declarations.                       |
 | `discovery`         | Discovered resources and target views.               |
 | `enrollment`        | Enrollment and credential objects.                   |
+| `execution_state`   | Execution local state objects.                       |
 | `exporter`          | Export / delivery contracts.                         |
 | `gateway`           | Gateway-facing request / response objects.           |
 | `ingest`            | Telemetry ingestion contracts.                       |
-| `state_exec`        | Execution and runtime state objects.                 |
 | `telemetry_record`  | Normalized telemetry records.                        |
 
 Version markers are exposed as constants:
