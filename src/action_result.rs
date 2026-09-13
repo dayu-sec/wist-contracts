@@ -17,7 +17,7 @@ pub struct ActionResultContract {
     pub request_id: Option<String>,
     pub final_status: FinalStatus,
     pub exit_reason: Option<String>,
-    pub step_records: Vec<StepActionRecord>,
+    pub step_records: Vec<StepRecord>,
     pub outputs: ActionOutputs,
     pub resource_usage: Option<ExecutionResourceUsage>,
     pub started_at: Option<String>,
@@ -71,7 +71,7 @@ impl FinalStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StepActionRecord {
+pub struct StepRecord {
     pub step_id: String,
     pub attempt: u32,
     pub op: Option<String>,

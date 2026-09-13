@@ -54,7 +54,7 @@ pub struct AgentHostProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentEnrollmentResultReturned {
+pub struct EnrollmentEnvelope {
     pub result: AgentEnrollmentResult,
 }
 
@@ -179,13 +179,13 @@ pub struct AgentPolicyBinding {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentEnrollmentResult, AgentEnrollmentResultReturned, AgentEnrollmentResultStatus,
+        AgentEnrollmentResult, EnrollmentEnvelope, AgentEnrollmentResultStatus,
         RENEW_AGENT_CREDENTIAL_KIND, RenewAgentCredential,
     };
 
     #[test]
     fn enrollment_result_status_uses_wire_names() {
-        let decoded: AgentEnrollmentResultReturned =
+        let decoded: EnrollmentEnvelope =
             serde_json::from_str(r#"{"result":{"status":"accepted","reason_code":null,"agent_id":"agent-1","instance_id":"host-a","issued_identity":null,"credential_bundle":null,"initial_config":null,"policy_binding":null}}"#)
                 .expect("decode");
 

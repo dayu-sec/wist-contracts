@@ -124,7 +124,7 @@ fn default_target_state() -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CandidateCollectionTarget {
+pub struct CollectionCandidate {
     pub candidate_id: String,
     pub target_ref: String,
     pub collection_kind: String,

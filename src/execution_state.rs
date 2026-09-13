@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExecRuntimeContext {
+pub struct ExecutionRuntimeContext {
     pub execution_id: String,
     pub spawned_at: String,
     pub deadline_at: Option<String>,
@@ -15,7 +15,7 @@ pub struct ExecRuntimeContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExecProgressState {
+pub struct ExecutionProgressState {
     pub execution_id: String,
     pub action_id: String,
     pub state: String,

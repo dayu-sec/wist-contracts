@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::API_VERSION_V1;
 use crate::discovery::DiscoverySnapshotContract;
 
-pub const REPORT_DISCOVERY_SNAPSHOT_KIND: &str = "report_discovery_snapshot";
+pub const DISCOVERY_REPORT_KIND: &str = "report_discovery_snapshot";
 pub const DISCOVERY_INGEST_ACK_KIND: &str = "discovery_ingest_ack";
 pub const INGEST_HEAD_MAGIC: &str = "WII1";
 pub const INGEST_HEAD_LEN: usize = 64;
@@ -17,7 +17,7 @@ const BODY_LEN_WIDTH: usize = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReportDiscoverySnapshot {
+pub struct DiscoveryReport {
     pub api_version: String,
     pub kind: String,
     pub report_id: String,
@@ -32,7 +32,7 @@ pub struct ReportDiscoverySnapshot {
     pub snapshot: DiscoverySnapshotContract,
 }
 
-impl ReportDiscoverySnapshot {
+impl DiscoveryReport {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         report_id: String,
@@ -45,7 +45,7 @@ impl ReportDiscoverySnapshot {
     ) -> Self {
         Self {
             api_version: API_VERSION_V1.to_string(),
-            kind: REPORT_DISCOVERY_SNAPSHOT_KIND.to_string(),
+            kind: DISCOVERY_REPORT_KIND.to_string(),
             report_id,
             agent_id,
             instance_id,
@@ -380,7 +380,7 @@ impl Error for IngestHeadError {}
 mod tests {
     use super::{
         DISCOVERY_INGEST_ACK_KIND, DiscoveryIngestAck, DiscoveryIngestAckStatus,
-        DiscoveryReportMode, REPORT_DISCOVERY_SNAPSHOT_KIND, ReportDiscoverySnapshot,
+        DiscoveryReportMode, DISCOVERY_REPORT_KIND, DiscoveryReport,
         INGEST_HEAD_LEN, IngestCompression, IngestEncoding,
         IngestHead, IngestMessageKind,
     };
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn report_discovery_snapshot_new_sets_contract_fields() {
         let snapshot = sample_snapshot();
-        let report = ReportDiscoverySnapshot::new(
+        let report = DiscoveryReport::new(
             "disrep_01".to_string(),
             "agent-01".to_string(),
             "inst-01".to_string(),
@@ -428,7 +428,7 @@ mod tests {
         );
 
         assert_eq!(report.api_version, API_VERSION_V1);
-        assert_eq!(report.kind, REPORT_DISCOVERY_SNAPSHOT_KIND);
+        assert_eq!(report.kind, DISCOVERY_REPORT_KIND);
         assert_eq!(report.snapshot_id, snapshot.snapshot_id);
         assert_eq!(report.revision, snapshot.revision);
         assert_eq!(report.generated_at, snapshot.generated_at);
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn discovery_report_round_trips_with_serde_json() {
-        let report = ReportDiscoverySnapshot::new(
+        let report = DiscoveryReport::new(
             "disrep_01".to_string(),
             "agent-01".to_string(),
             "inst-01".to_string(),
@@ -465,7 +465,7 @@ mod tests {
         );
 
         let json = serde_json::to_string(&report).expect("serialize report");
-        let decoded: ReportDiscoverySnapshot =
+        let decoded: DiscoveryReport =
             serde_json::from_str(&json).expect("deserialize report");
 
         assert_eq!(decoded, report);
