@@ -4,6 +4,14 @@ version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.85"
+authors = ["wist Dev Team"]
+description = "Versioned contract and schema objects shared by the wist edge and center components"
+repository = "https://github.com/dayu-sec/wist-contracts"
+homepage = "https://github.com/dayu-sec/wist-contracts"
+documentation = "https://docs.rs/wist-contracts"
+readme = "README.md"
+keywords = ["wist", "contracts", "schema", "agent", "telemetry"]
+categories = ["data-structures", "config", "network-programming"]
 
 [lib]
 path = "src/lib.rs"
