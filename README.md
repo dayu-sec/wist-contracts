@@ -9,7 +9,6 @@ Versioned contract and schema objects shared by edge and center components.
 [![CI](https://github.com/dayu-sec/wist-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/dayu-sec/wist-contracts/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/dayu-sec/wist-contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/dayu-sec/wist-contracts)
 [![dependency status](https://deps.rs/repo/github/dayu-sec/wist-contracts/status.svg)](https://deps.rs/repo/github/dayu-sec/wist-contracts)
-[![Lines of Code](https://tokei.rs/b1/github/dayu-sec/wist-contracts)](https://github.com/dayu-sec/wist-contracts)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 `wist-contracts` is the single source of truth for the serialized objects exchanged between the
