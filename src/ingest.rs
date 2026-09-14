@@ -379,10 +379,9 @@ impl Error for IngestHeadError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        DISCOVERY_INGEST_ACK_KIND, DiscoveryIngestAck, DiscoveryIngestAckStatus,
-        DiscoveryReportMode, DISCOVERY_REPORT_KIND, DiscoveryReport,
-        INGEST_HEAD_LEN, IngestCompression, IngestEncoding,
-        IngestHead, IngestMessageKind,
+        DISCOVERY_INGEST_ACK_KIND, DISCOVERY_REPORT_KIND, DiscoveryIngestAck,
+        DiscoveryIngestAckStatus, DiscoveryReport, DiscoveryReportMode, INGEST_HEAD_LEN,
+        IngestCompression, IngestEncoding, IngestHead, IngestMessageKind,
     };
     use crate::API_VERSION_V1;
     use std::collections::BTreeMap;
@@ -465,8 +464,7 @@ mod tests {
         );
 
         let json = serde_json::to_string(&report).expect("serialize report");
-        let decoded: DiscoveryReport =
-            serde_json::from_str(&json).expect("deserialize report");
+        let decoded: DiscoveryReport = serde_json::from_str(&json).expect("deserialize report");
 
         assert_eq!(decoded, report);
     }

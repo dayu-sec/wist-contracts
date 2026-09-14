@@ -179,8 +179,8 @@ pub struct PolicyBinding {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnrollmentOutcome, EnrollmentEnvelope, EnrollmentStatus,
-        RENEW_AGENT_CREDENTIAL_KIND, CredentialRenewal,
+        CredentialRenewal, EnrollmentEnvelope, EnrollmentOutcome, EnrollmentStatus,
+        RENEW_AGENT_CREDENTIAL_KIND,
     };
 
     #[test]
