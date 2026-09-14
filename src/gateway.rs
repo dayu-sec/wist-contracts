@@ -28,7 +28,7 @@ pub struct AgentWorkStateChange {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentHello {
+pub struct AgentStatusReport {
     pub agent_id: String,
     pub instance_id: String,
     pub version: String,
@@ -291,4 +291,22 @@ pub enum AckStatus {
     Stale,
     #[serde(rename = "busy")]
     Busy,
+}
+
+/// Gateway 对动作结果上报的确认响应。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionResultAck {
+    pub report_id: String,
+    pub agent_id: String,
+    pub acknowledged_at: String,
+}
+
+/// Gateway 对 Agent 状态上报的确认响应。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentStatusAck {
+    pub agent_id: String,
+    pub instance_id: String,
+    pub acknowledged_at: String,
 }
