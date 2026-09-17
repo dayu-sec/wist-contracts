@@ -68,7 +68,8 @@ pub enum DiscoveryReportMode {
     SnapshotReplace,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "event", domain = "Reporting", module = "Reporting.Protocol")]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryIngestAck {
     pub api_version: String,

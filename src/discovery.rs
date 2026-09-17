@@ -35,7 +35,8 @@ impl DiscoverySnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Observed", module = "Observed.Snapshot")]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryOrigin {
     pub origin_id: String,
@@ -44,7 +45,8 @@ pub struct DiscoveryOrigin {
     pub observed_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Observed", module = "Observed.Snapshot")]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveryCacheMeta {
     pub schema_version: String,
@@ -78,7 +80,8 @@ impl DiscoveryCacheMeta {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Observed", module = "Observed.Snapshot")]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveredResource {
     pub resource_id: String,
@@ -100,7 +103,8 @@ pub struct DiscoveredResource {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Observed", module = "Observed.Snapshot")]
 #[serde(deny_unknown_fields)]
 pub struct DiscoveredTarget {
     pub target_id: String,
@@ -134,7 +138,8 @@ pub struct CollectionCandidate {
     pub generated_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Observed", module = "Observed.Snapshot")]
 #[serde(deny_unknown_fields)]
 pub struct StringKeyValue {
     pub key: String,

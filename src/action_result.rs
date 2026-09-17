@@ -101,14 +101,16 @@ pub enum StepStatus {
     Skipped,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionOutputs {
     #[serde(default)]
     pub items: Vec<ActionOutputItem>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionOutputItem {
     pub name: String,

@@ -46,7 +46,8 @@ pub struct AgentStatusReport {
     pub work_state_changes: Option<Vec<AgentWorkStateChange>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
 #[serde(deny_unknown_fields)]
 pub struct DispatchActionPlan {
     pub api_version: String,
@@ -66,7 +67,8 @@ impl DispatchActionPlan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "event", domain = "Reporting", module = "Reporting.Protocol")]
 #[serde(deny_unknown_fields)]
 pub struct ActionPlanAck {
     pub api_version: String,
@@ -130,7 +132,8 @@ impl ActionPlanAck {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Protocol")]
 pub struct ActionPlanAckBuilder {
     dispatch_id: String,
     action_id: String,
@@ -212,7 +215,8 @@ impl ActionPlanAckBuilder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
 #[serde(deny_unknown_fields)]
 pub struct ReportActionResult {
     pub api_version: String,
@@ -265,7 +269,8 @@ impl ReportActionResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Protocol")]
 #[serde(deny_unknown_fields)]
 pub struct ResultAttestation {
     /// Development placeholder until real signing and verifier plumbing is implemented.

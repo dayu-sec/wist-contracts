@@ -18,7 +18,8 @@ pub struct CapabilityReport {
     pub limits: CapabilityLimits,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 pub struct CapabilityReportSections {
     pub agent_id: String,
     pub instance_id: String,
@@ -46,7 +47,8 @@ impl CapabilityReport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ExecCapabilities {
     #[serde(default)]
@@ -55,7 +57,8 @@ pub struct ExecCapabilities {
     pub execution_profiles: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct MetricsCapabilities {
     #[serde(default)]
@@ -68,7 +71,8 @@ pub struct MetricsCapabilities {
     pub discovery_modes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct LogsCapabilities {
     #[serde(default)]
@@ -81,7 +85,8 @@ pub struct LogsCapabilities {
     pub watcher_modes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct UpgradeCapabilities {
     pub supported: bool,
@@ -89,7 +94,8 @@ pub struct UpgradeCapabilities {
     pub features: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityLimits {
     pub max_running_actions: Option<u32>,

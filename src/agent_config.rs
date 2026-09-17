@@ -46,7 +46,8 @@ impl AgentConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct DiscoverySection {
     #[serde(default = "default_discovery_host_enabled")]
@@ -73,7 +74,8 @@ impl Default for DiscoverySection {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct AgentSection {
     #[serde(default)]
@@ -84,7 +86,8 @@ pub struct AgentSection {
     pub instance_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct ControlPlaneSection {
     #[serde(default)]
@@ -109,7 +112,8 @@ pub struct ControlPlaneSection {
     pub auth_mode: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct PathsSection {
     #[serde(default = "default_root_dir")]
@@ -133,7 +137,8 @@ impl Default for PathsSection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionSection {
     #[serde(default = "default_max_running_actions")]
@@ -157,14 +162,16 @@ impl Default for ExecutionSection {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct TelemetrySection {
     #[serde(default)]
     pub logs: LogsSection,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct LogsSection {
     #[serde(default)]
@@ -214,7 +221,8 @@ impl Default for LogsSection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct LogsOutputSection {
     #[serde(default = "default_logs_output_kind")]
@@ -235,7 +243,8 @@ impl Default for LogsOutputSection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct LogsFileOutputSection {
     #[serde(default = "default_logs_output_file")]
@@ -250,7 +259,8 @@ impl Default for LogsFileOutputSection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct LogsTcpOutputSection {
     #[serde(default = "default_logs_output_tcp_addr")]
@@ -271,7 +281,8 @@ impl Default for LogsTcpOutputSection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct LogFileInputSection {
     pub input_id: String,

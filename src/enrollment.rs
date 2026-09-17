@@ -81,7 +81,8 @@ pub enum EnrollmentStatus {
     PendingReview,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Control", module = "Control.Agent.Identity")]
 #[serde(deny_unknown_fields)]
 pub struct AgentIdentity {
     pub agent_id: String,
@@ -94,7 +95,8 @@ pub struct AgentIdentity {
     pub status: AgentIdentityStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "state", domain = "Control", module = "Control.Agent.Identity")]
 pub enum AgentIdentityStatus {
     #[serde(rename = "active")]
     Active,

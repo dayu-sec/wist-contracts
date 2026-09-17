@@ -42,7 +42,8 @@ impl ActionPlan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionPlanMeta {
     pub action_id: String,
@@ -55,7 +56,8 @@ pub struct ActionPlanMeta {
     pub expires_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionPlanTarget {
     pub agent_id: String,
@@ -68,7 +70,8 @@ pub struct ActionPlanTarget {
     pub selectors: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionPlanConstraints {
     pub risk_level: RiskLevel,
@@ -103,14 +106,16 @@ pub enum ApprovalMode {
     Required,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionPlanProgram {
     pub entry: String,
     pub steps: Vec<ActionPlanStep>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionPlanStep {
     pub id: String,

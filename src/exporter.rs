@@ -8,7 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 /// Unified output envelope wrapping any payload type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Pipeline")]
 #[serde(deny_unknown_fields)]
 pub struct ExporterOutput<T> {
     /// Schema identifier for the envelope itself.
@@ -30,7 +31,8 @@ pub struct ExporterOutput<T> {
 }
 
 /// Source agent identity within the envelope.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Pipeline")]
 #[serde(deny_unknown_fields)]
 pub struct ExporterSource {
     /// Logical agent identity, stable across instances.
