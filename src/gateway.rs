@@ -26,7 +26,8 @@ pub struct AgentWorkStateChange {
     pub at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
 #[serde(deny_unknown_fields)]
 pub struct AgentStatusReport {
     pub agent_id: String,

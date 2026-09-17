@@ -13,7 +13,8 @@ pub const STEP_KIND_GUARD: &str = "guard";
 pub const STEP_KIND_OUTPUT: &str = "output";
 pub const STEP_KIND_ABORT: &str = "abort";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionPlan {
     pub api_version: String,

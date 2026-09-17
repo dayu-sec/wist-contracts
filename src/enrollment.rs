@@ -39,7 +39,8 @@ impl EnrollmentRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Control", module = "Control.Agent.Identity")]
 #[serde(deny_unknown_fields)]
 pub struct HostProfile {
     pub node_id: String,
@@ -108,7 +109,8 @@ pub enum AgentIdentityStatus {
     RenewalRequired,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Control", module = "Control.Agent.Identity")]
 #[serde(deny_unknown_fields)]
 pub struct CredentialBundle {
     pub credential_id: String,

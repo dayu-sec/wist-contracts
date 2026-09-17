@@ -7,7 +7,8 @@ use crate::API_VERSION_V1;
 
 pub const ACTION_RESULT_KIND: &str = "action_result";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct ActionResult {
     pub api_version: String,

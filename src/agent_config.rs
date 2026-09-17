@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::SCHEMA_VERSION_V1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     pub schema_version: String,

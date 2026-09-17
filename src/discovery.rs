@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::SCHEMA_VERSION_V1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Observed", module = "Observed.Snapshot")]
 #[serde(deny_unknown_fields)]
 pub struct DiscoverySnapshot {
     pub schema_version: String,
@@ -126,7 +127,8 @@ fn default_target_state() -> String {
     "active".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Observed", module = "Observed.Snapshot")]
 #[serde(deny_unknown_fields)]
 pub struct CollectionCandidate {
     pub candidate_id: String,
