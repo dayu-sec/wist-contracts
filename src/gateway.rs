@@ -316,3 +316,101 @@ pub struct AgentStatusAck {
     pub instance_id: String,
     pub acknowledged_at: String,
 }
+
+pub const REPORT_AGENT_FACT_SUMMARY_KIND: &str = "report_agent_fact_summary";
+
+/// 事实上报的确认状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactSummaryAckStatus {
+    /// 已入库。
+    Accepted,
+    /// 同 `content_digest` 已处理过：未改数据，也未重复计分。
+    Duplicate,
+    /// envelope 或身份非法。
+    Rejected,
+}
+
+/// agentd → 网关的事实**摘要**上报（控制面）。
+///
+/// 与数据面上的原文快照（`ReportDiscoverySnapshot`）分工不同，**不是同一条路**：
+/// 摘要只服务用途推断（网关侧按规则表算），去重后 10~30 KB，走已认证的控制面；
+/// 原文快照一台几百 KB，走数据面给中心做资产整理。所以网关只接摘要。
+///
+/// 幂等键是 `content_digest`，不是 `revision` —— 后者每轮 refresh 无条件 +1。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
+#[serde(deny_unknown_fields)]
+pub struct ReportAgentFactSummary {
+    pub api_version: String,
+    pub kind: String,
+    pub report_id: String,
+    pub agent_id: String,
+    pub instance_id: String,
+    /// 内容摘要：**幂等键**。事实上报按内容变化触发，不按 revision 前进。
+    pub content_digest: String,
+    /// 仅留痕，不参与判重。
+    pub revision: i64,
+    pub observed_at: String,
+    pub os: String,
+    pub arch: String,
+    /// 去重前的进程条数（去重会毁掉基数，留一个原始计数备查）。
+    pub process_count: i64,
+    /// 去重后的进程可执行标识。注意两边不同源：
+    /// macOS 是 `ps -axo comm=` 给的完整路径，Linux 是 `/proc/{pid}/comm`（只有 basename）。
+    pub process_executables: Vec<String>,
+    /// 已装包名（仅 linux；macOS 侧待定）。
+    pub packages: Vec<String>,
+    pub listen_ports: Vec<String>,
+    pub reported_at: String,
+}
+
+impl ReportAgentFactSummary {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_agent_facts(
+        report_id: String,
+        agent_id: String,
+        instance_id: String,
+        content_digest: String,
+        revision: i64,
+        observed_at: String,
+        os: String,
+        arch: String,
+        process_count: i64,
+        process_executables: Vec<String>,
+        packages: Vec<String>,
+        listen_ports: Vec<String>,
+        reported_at: String,
+    ) -> Self {
+        Self {
+            api_version: API_VERSION_V1.to_string(),
+            kind: REPORT_AGENT_FACT_SUMMARY_KIND.to_string(),
+            report_id,
+            agent_id,
+            instance_id,
+            content_digest,
+            revision,
+            observed_at,
+            os,
+            arch,
+            process_count,
+            process_executables,
+            packages,
+            listen_ports,
+            reported_at,
+        }
+    }
+}
+
+/// Gateway 对事实上报的确认响应（对应模型 `FactSummaryAccepted`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FactSummaryAccepted {
+    pub report_id: String,
+    pub agent_id: String,
+    pub content_digest: String,
+    pub ack_status: FactSummaryAckStatus,
+    /// 幂等命中（`duplicate`）时仍回带已存的建议，Agent 侧不必再问一次。
+    pub suggestion_id: Option<String>,
+    pub received_at: String,
+}
