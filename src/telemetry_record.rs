@@ -52,7 +52,7 @@ impl TelemetryRecord {
 
 /// 数据帧信封（数据平面 TCP 帧的 JSON 信封部分，短名）。
 ///
-/// 帧完整形态为 `{envelope} RAW: <正文>`；本结构只对应信封 `{schema, agent, ts, seq}`，
+/// 帧完整形态为 `{envelope} LOGRAW: <正文>`；本结构只对应信封 `{schema, agent, ts, seq}`，
 /// 正文不进 JSON、不转义。字段用 `#[serde(rename)]` 映射线上短名；`agent` 向后兼容（缺省为空串）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataFrame {
