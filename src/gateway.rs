@@ -396,6 +396,21 @@ pub struct ReportAgentFactSummary {
     /// 已装包名（仅 linux；macOS 侧待定）。
     pub packages: Vec<String>,
     pub listen_ports: Vec<String>,
+    // ── 以下三个是**留痕/展示**字段：**不进内容摘要**，也不参与判重 ──
+    //
+    // 为什么不进摘要：摘要回答的是「内容变了没有」（幂等键与用途判据的输入）。
+    // 机器名、IP 会因 DHCP/改名而变，但它们不影响「这台机器是干什么用的」——
+    // 放进摘要会让每次换网就触发一次重报与重算。所以它们只用于展示与追溯。
+    // 也正因如此，`fact-v1` 的字段集**没变**，不需要 bump 版本、不需要强制重报。
+    /// 主机标识（发现里 `host` 方向的 `host.id`）。
+    #[serde(default)]
+    pub host_id: String,
+    /// 主机名（`host.name`）。
+    #[serde(default)]
+    pub host_name: String,
+    /// 网卡地址（每块网卡一条，形如 `en0 192.168.1.5/24`）。
+    #[serde(default)]
+    pub network_addresses: Vec<String>,
     pub reported_at: String,
 }
 
@@ -431,8 +446,28 @@ impl ReportAgentFactSummary {
             process_executables,
             packages,
             listen_ports,
+            host_id: String::new(),
+            host_name: String::new(),
+            network_addresses: Vec::new(),
             reported_at,
         }
+    }
+
+    /// 补上**留痕/展示**字段（不参与内容摘要与判重）。
+    ///
+    /// 为什么另开一个方法而不是给构造函数再加三个参数：那个函数已经有 13 个位置参数，
+    /// 再加就是 16 个 —— 调用方只需错一次顺序，就会把主机名传成 os、把端口传成包名，
+    /// 而这类错**不会报错**（都是 String/Vec<String>），只会静默写错数据。
+    pub fn with_display(
+        mut self,
+        host_id: String,
+        host_name: String,
+        network_addresses: Vec<String>,
+    ) -> Self {
+        self.host_id = host_id;
+        self.host_name = host_name;
+        self.network_addresses = network_addresses;
+        self
     }
 }
 
