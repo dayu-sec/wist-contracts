@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::API_VERSION_V1;
 use crate::action_plan::ActionPlan;
 use crate::action_result::{ActionResult, FinalStatus};
+use crate::discovery_policy::{DiscoveryAspectPolicy, DiscoveryAspectPolicySet};
 
 pub const DISPATCH_ACTION_PLAN_KIND: &str = "dispatch_action_plan";
 pub const ACTION_PLAN_ACK_KIND: &str = "action_plan_ack";
@@ -27,7 +28,12 @@ pub struct AgentWorkStateChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
+#[jumo(
+    kind = "message",
+    role = "command",
+    domain = "Reporting",
+    module = "Reporting.Protocol"
+)]
 #[serde(deny_unknown_fields)]
 pub struct AgentStatusReport {
     pub agent_id: String,
@@ -48,7 +54,12 @@ pub struct AgentStatusReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
+#[jumo(
+    kind = "message",
+    role = "command",
+    domain = "Reporting",
+    module = "Reporting.Protocol"
+)]
 #[serde(deny_unknown_fields)]
 pub struct DispatchActionPlan {
     pub api_version: String,
@@ -217,7 +228,12 @@ impl ActionPlanAckBuilder {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
+#[jumo(
+    kind = "message",
+    role = "command",
+    domain = "Reporting",
+    module = "Reporting.Protocol"
+)]
 #[serde(deny_unknown_fields)]
 pub struct ReportActionResult {
     pub api_version: String,
@@ -344,7 +360,12 @@ pub enum FactSummaryAckStatus {
 /// 以此判重。`content_digest` 字段因此只是 agent 的**声明**：
 /// 与网关算出来的不一致时会记 `FactDigestMismatch` 告警（可能只是版本偏差，**不拒收**）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
+#[jumo(
+    kind = "message",
+    role = "command",
+    domain = "Reporting",
+    module = "Reporting.Protocol"
+)]
 #[serde(deny_unknown_fields)]
 pub struct ReportAgentFactSummary {
     pub api_version: String,
@@ -419,4 +440,63 @@ pub struct FactSummaryAccepted {
     /// 幂等命中（`duplicate`）时仍回带已存的建议，Agent 侧不必再问一次。
     pub suggestion_id: Option<String>,
     pub received_at: String,
+}
+
+pub const POLL_DISCOVERY_POLICIES_KIND: &str = "poll_discovery_policies";
+
+/// agentd → 网关：拉取**发现方向策略表**（控制面，复用 agent 凭据）。
+///
+/// 为什么是「拉」而不是网关推：agentd 没有入站监听（那要开端口、要证书、要处理公网可达），
+/// 而策略是**幂等内容**（声明式、可重复拉取，与 PollWork 同类）—— 拉一次就够，不必重放。
+///
+/// 为什么不需要 `wait_ms`（PollControlCommands 有）：那是长轮询指令流；策略表按版本变化，
+/// 轮询周期由 agentd 自己控（它知道自己能承受多密）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(
+    kind = "message",
+    role = "command",
+    domain = "Reporting",
+    module = "Reporting.Protocol"
+)]
+#[serde(deny_unknown_fields)]
+pub struct PollDiscoveryPolicies {
+    pub api_version: String,
+    pub kind: String,
+    pub agent_id: String,
+    pub instance_id: String,
+    pub requested_at: String,
+}
+
+/// 网关返回的策略表（对应模型 `Discovery.Probe.DiscoveryAspectPolicySet`）。
+///
+/// 带 `policy_version`：agentd 用它判断「这份与我手上的是不是同一版」，
+/// 从而在版本未变时跳过重算与日志（而不是每次都重新应用一遍）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(
+    kind = "message",
+    role = "response",
+    domain = "Reporting",
+    module = "Reporting.Protocol"
+)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryPoliciesReturned {
+    pub policy_version: i64,
+    pub published_at: String,
+    pub policies: Vec<DiscoveryAspectPolicy>,
+    pub returned_at: String,
+}
+
+impl DiscoveryPoliciesReturned {
+    /// 从策略表组响应。
+    ///
+    /// 不回带 `agent_id`/`instance_id`（其它 ack 会带）：这不是「确认某次上报」，
+    /// 而是「把当前版本的内容交给你」—— 身份由凭证本身表达，重复一份只会多一个会失配的字段。
+    pub fn from_set(set: &DiscoveryAspectPolicySet, returned_at: String) -> Self {
+        Self {
+            policy_version: set.policy_version,
+            published_at: set.published_at.clone(),
+            policies: set.policies.clone(),
+            returned_at,
+        }
+    }
 }

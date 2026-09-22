@@ -6,6 +6,7 @@ pub mod agent_config;
 pub mod agent_state;
 pub mod capability_report;
 pub mod discovery;
+pub mod discovery_policy;
 pub mod enrollment;
 pub mod execution_state;
 pub mod exporter;
