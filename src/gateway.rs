@@ -51,6 +51,13 @@ pub struct AgentStatusReport {
     /// 自上次上报以来的工作状态变化（paused/resumed），非告警、非失败。
     #[serde(default)]
     pub work_state_changes: Option<Vec<AgentWorkStateChange>>,
+    /// 本机**实际生效**的发现方向策略版本；`None` = 还没拿到策略表（在用内建默认周期）。
+    ///
+    /// 为什么必须由 agent 上报、而不是网关自己记账：网关知道自己**发布**了哪一版，
+    /// 但不知道某台机器**拉到并应用**了哪一版 —— 拉取可能失败、可能还没到轮询节拍、
+    /// 也可能拿到后被夹取。而运维要回答的正是那句「我改了策略，哪些机器还没生效」。
+    #[serde(default)]
+    pub discovery_policy_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
