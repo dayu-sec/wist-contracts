@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod enrollment;
 pub mod execution_state;
 pub mod exporter;
+pub mod fact_summary;
 pub mod gateway;
 pub mod ingest;
 pub mod telemetry_record;

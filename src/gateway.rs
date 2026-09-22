@@ -325,7 +325,7 @@ pub const REPORT_AGENT_FACT_SUMMARY_KIND: &str = "report_agent_fact_summary";
 pub enum FactSummaryAckStatus {
     /// 已入库。
     Accepted,
-    /// 同 `content_digest` 已处理过：未改数据，也未重复计分。
+    /// 内容未变（网关按**自算**摘要判定）：只刷留痕，未改内容、未重复计分。
     Duplicate,
     /// envelope 或身份非法。
     Rejected,
@@ -337,7 +337,12 @@ pub enum FactSummaryAckStatus {
 /// 摘要只服务用途推断（网关侧按规则表算），去重后 10~30 KB，走已认证的控制面；
 /// 原文快照一台几百 KB，走数据面给中心做资产整理。所以网关只接摘要。
 ///
-/// 幂等键是 `content_digest`，不是 `revision` —— 后者每轮 refresh 无条件 +1。
+/// 幂等键是内容摘要，不是 `revision`（后者每轮 refresh 无条件 +1）。
+///
+/// agentd **无条件周期全量**上报，判重归网关：网关用
+/// `wist_contracts::fact_summary::FactContent::content_digest` 从收到的内容**自己算**摘要，
+/// 以此判重。`content_digest` 字段因此只是 agent 的**声明**：
+/// 与网关算出来的不一致时会记 `FactDigestMismatch` 告警（可能只是版本偏差，**不拒收**）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ::jumo_derive::Jumo)]
 #[jumo(kind = "message", role = "command", domain = "Reporting", module = "Reporting.Protocol")]
 #[serde(deny_unknown_fields)]
@@ -347,14 +352,15 @@ pub struct ReportAgentFactSummary {
     pub report_id: String,
     pub agent_id: String,
     pub instance_id: String,
-    /// 内容摘要：**幂等键**。事实上报按内容变化触发，不按 revision 前进。
+    /// agent 侧声明的内容摘要。**不是**判重键：网关从下列内容字段自算，此值只作版本偏差的金丝雀。
     pub content_digest: String,
-    /// 仅留痕，不参与判重。
+    /// 仅留痕：快照 revision 每轮 refresh 无条件 +1，网关不据它判重。
     pub revision: i64,
+    /// 仅留痕：观察到的事实属于哪一刻（快照生成时间）。
     pub observed_at: String,
     pub os: String,
     pub arch: String,
-    /// 去重前的进程条数（去重会毁掉基数，留一个原始计数备查）。
+    /// 仅留痕：去重前的进程条数（去重会毁掉基数，留一个原始计数备查），不进摘要。
     pub process_count: i64,
     /// 去重后的进程可执行标识。注意两边不同源：
     /// macOS 是 `ps -axo comm=` 给的完整路径，Linux 是 `/proc/{pid}/comm`（只有 basename）。
