@@ -234,6 +234,137 @@ pub struct WorkAccepted {
     pub accepted_at: String,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 工作参数（`StandingWork.spec` 的内容）
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 模型里 `StandingWork.spec` 是一个 `String`，语义是「工作参数：由采集目录的条目
+// 组合而成，**不是自由文本**」。这里的三个类型就是它的**编码**：一串已物化的采集单元。
+//
+// 为什么必须带上来源与规则标识，而不是只给一串 `unit_id`：agentd 拿到工作要能
+// **直接照做**。单元的采集来源（`sources`）与数据面规则标识（`rule_ref`）本来都只
+// 存在于网关的采集目录里，只发 id 等于发了一张自己去不了的地址 —— 于是要么再去网关
+// 拉一次目录（多一条必须鉴权的路径），要么两边各维护一份目录（必然漂移）。
+//
+// 为什么不把它们塞成 `StandingWork` 的字段：那会把「工作」与「内容目录」的边界糊掉；
+// 模型里这个字段就是**不透明的工作参数**，保持它不透明是两侧能独立演进的前提。
+
+/// 一份常驻工作的工作参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkSpec {
+    /// 本工作包含的采集单元（已按该机器的事实裁剪过）。
+    #[serde(default)]
+    pub units: Vec<WorkSpecUnit>,
+}
+
+/// 一个已物化的采集单元：只说「采什么、怎么落地」，不复述策展元信息。
+///
+/// 刻意不带 `status` / `match` / `catalog_version`：那些是网关策展与裁剪的输入，
+/// 工作一旦发出去就已经裁剪完了。带上它们会让 agentd 有「再判断一次」的空间，
+/// 而 agentd 不是第二个策展器。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkSpecUnit {
+    pub unit_id: String,
+    /// `collect_logs` | `collect_metrics`：该单元由哪类采集器承接。
+    pub capability: String,
+    /// 数据面 rule/oml 标识（空 = 该单元还没接上规则，理论不会入工作）。
+    #[serde(default)]
+    pub rule_ref: String,
+    /// `none` | `root` | `fda`：要采到这东西得有什么权限 —— 缺权限时应**说清缺什么**，
+    /// 而不是安静地采不到。
+    #[serde(default)]
+    pub requires_privilege: String,
+    #[serde(default)]
+    pub sources: Vec<WorkSpecSource>,
+}
+
+/// 采集来源：`kind` ∈ `FileGlob` | `Exporter` | `UnifiedLogPredicate` | `MetricInterval`。
+///
+/// 与模型 `CollectionSource` 同形：`target` 的含义由 `kind` 决定
+/// （路径通配 / 导出器标识 / 谓词 / 周期）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkSpecSource {
+    pub kind: String,
+    pub target: String,
+}
+
+impl WorkSpec {
+    /// 解析 `StandingWork.spec`。
+    ///
+    /// 解析失败**不当作空工作**：空工作会让「参数坏了」退化成「没事可做」，
+    /// 两种情形的运维动作完全不同。
+    pub fn parse(spec: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(spec)
+    }
+
+    /// 序列化（网关写 `spec` 用）。字段顺序固定 → 同一份工作每次编码都一样，
+    /// `plan_version` 之外的字节也稳定，方便对账。
+    pub fn encode(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    /// 周期类来源声明的间隔（秒）：取所有 `MetricInterval` 里最密的那一个。
+    ///
+    /// 取最密而不是取第一个：一份工作里若有两个指标单元，采慢的那个会
+    /// 静默压掉采密的要求，而“要得最急”的需求才是上送频率的下界。
+    pub fn metric_interval_seconds(&self) -> Option<i64> {
+        self.units
+            .iter()
+            .flat_map(|unit| unit.sources.iter())
+            .filter(|source| source.kind == "MetricInterval")
+            .filter_map(|source| parse_interval_seconds(&source.target))
+            .min()
+    }
+
+    /// 是否要采日志（有 `collect_logs` 单元）。
+    pub fn collects_logs(&self) -> bool {
+        self.units
+            .iter()
+            .any(|unit| unit.capability == "collect_logs")
+    }
+}
+
+impl WorkSpecUnit {
+    /// 该单元里可以交给本地文件采集器的路径通配（`FileGlob` 来源）。
+    ///
+    /// 其它来源（导出器 / 统一日志谓词）不是本地 tail 一个文件能承接的：
+    /// 调用方应当把它们当成**还没支持的单元**如实报出来，而不是当没看见。
+    pub fn file_globs(&self) -> Vec<&str> {
+        self.sources
+            .iter()
+            .filter(|source| source.kind == "FileGlob")
+            .map(|source| source.target.as_str())
+            .collect()
+    }
+
+    /// 本单元有没有 agentd 目前接不了的来源。
+    pub fn unsupported_sources(&self) -> Vec<&WorkSpecSource> {
+        self.sources
+            .iter()
+            .filter(|source| !matches!(source.kind.as_str(), "FileGlob" | "MetricInterval"))
+            .collect()
+    }
+}
+
+/// 解析 `15s` / `60s` / `5m` 这类周期写法（与目录里 `MetricInterval` 的写法一致）。
+///
+/// 只认秒与分两种后缀：目录里的值是人写的，多一个单位就多一种笔误的可能，
+/// 而解析不了时返回 `None` 会让调用方回退到自己的默认值（不静默取 0）。
+pub fn parse_interval_seconds(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    if let Some(value) = raw.strip_suffix('s') {
+        return value.trim().parse::<i64>().ok().filter(|value| *value > 0);
+    }
+    if let Some(value) = raw.strip_suffix('m') {
+        let minutes = value.trim().parse::<i64>().ok()?;
+        return Some(minutes * 60).filter(|value| *value > 0);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +472,79 @@ mod tests {
         let json = r#"{"agent_id":"a","standing":[],"one_shot":[],"sequence":0,
                       "granted_at":"t","extra":1}"#;
         assert!(serde_json::from_str::<WorkGrant>(json).is_err());
+    }
+
+    // ── 工作参数（`spec`）的编码 ──
+
+    fn spec() -> WorkSpec {
+        WorkSpec {
+            units: vec![
+                WorkSpecUnit {
+                    unit_id: "mac-host-metrics".to_string(),
+                    capability: "collect_metrics".to_string(),
+                    rule_ref: "agent_uplink".to_string(),
+                    requires_privilege: "none".to_string(),
+                    sources: vec![WorkSpecSource {
+                        kind: "MetricInterval".to_string(),
+                        target: "15s".to_string(),
+                    }],
+                },
+                WorkSpecUnit {
+                    unit_id: "mac-privacy-tcc".to_string(),
+                    capability: "collect_logs".to_string(),
+                    rule_ref: "macos/tcc".to_string(),
+                    requires_privilege: "fda".to_string(),
+                    sources: vec![
+                        WorkSpecSource {
+                            kind: "Exporter".to_string(),
+                            target: "sqlite-snapshot(TCC.db)".to_string(),
+                        },
+                        WorkSpecSource {
+                            kind: "FileGlob".to_string(),
+                            target: "/var/log/tccd/*".to_string(),
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn spec_round_trips_and_reports_what_agentd_can_do() {
+        let encoded = spec().encode().expect("encode");
+        let decoded = WorkSpec::parse(&encoded).expect("parse");
+        assert_eq!(decoded, spec());
+
+        assert!(decoded.collects_logs());
+        // 取了最密的周期：要得最急的才是上送频率的下界。
+        assert_eq!(decoded.metric_interval_seconds(), Some(15));
+        // 可本地 tail 的路径挑得出来，接不了的来源也报得出来（而不是当没看见）。
+        assert_eq!(decoded.units[1].file_globs(), vec!["/var/log/tccd/*"]);
+        assert_eq!(decoded.units[1].unsupported_sources().len(), 1);
+        assert_eq!(
+            decoded.units[1].unsupported_sources()[0].kind,
+            "Exporter"
+        );
+    }
+
+    #[test]
+    fn a_broken_spec_is_an_error_not_an_empty_work() {
+        // 参数坏了与「没事可做」是两回事：前者要人去看，后者什么都不用做。
+        assert!(WorkSpec::parse("mac-host-metrics").is_err());
+        assert!(WorkSpec::parse("{").is_err());
+        // 空工作本身是合法的（能表示「这个面暂时没东西可采」）。
+        assert!(WorkSpec::parse(r#"{"units":[]}"#).unwrap().units.is_empty());
+        assert_eq!(WorkSpec::parse(r#"{"units":[]}"#).unwrap().metric_interval_seconds(), None);
+    }
+
+    #[test]
+    fn interval_parsing_accepts_seconds_and_minutes_only() {
+        assert_eq!(parse_interval_seconds("15s"), Some(15));
+        assert_eq!(parse_interval_seconds(" 5s "), Some(5));
+        assert_eq!(parse_interval_seconds("5m"), Some(300));
+        // 认不出来的回 None（调用方回退到自己的默认值），而不是静默当 0。
+        assert_eq!(parse_interval_seconds("15"), None);
+        assert_eq!(parse_interval_seconds("0s"), None);
+        assert_eq!(parse_interval_seconds(""), None);
     }
 }
