@@ -14,6 +14,7 @@ pub mod fact_summary;
 pub mod gateway;
 pub mod ingest;
 pub mod telemetry_record;
+pub mod work;
 
 pub const API_VERSION_V1: &str = "v1";
 pub const SCHEMA_VERSION_V1: &str = "v1";
