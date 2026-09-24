@@ -289,6 +289,16 @@ pub struct WorkSpecUnit {
 pub struct WorkSpecSource {
     pub kind: String,
     pub target: String,
+    /// 怎么读这条来源：`none`（一行一条）| `indented`（行首缩进是上一条的续行）。
+    ///
+    /// 只对可 tail 的 `FileGlob` 有意义，其余 kind 恒为 `none`。**不是**"要不要多行"这个偏好，
+    /// 而是这条日志的**固有格式**：说错了要么把多行记录拆散、要么把独立记录粘成一条。
+    #[serde(default = "default_multiline")]
+    pub multiline: String,
+}
+
+fn default_multiline() -> String {
+    "none".to_string()
 }
 
 impl WorkSpec {
@@ -328,15 +338,14 @@ impl WorkSpec {
 }
 
 impl WorkSpecUnit {
-    /// 该单元里可以交给本地文件采集器的路径通配（`FileGlob` 来源）。
+    /// 该单元里可以交给本地文件采集器的来源（`FileGlob`）。
     ///
     /// 其它来源（导出器 / 统一日志谓词）不是本地 tail 一个文件能承接的：
     /// 调用方应当把它们当成**还没支持的单元**如实报出来，而不是当没看见。
-    pub fn file_globs(&self) -> Vec<&str> {
+    pub fn file_sources(&self) -> Vec<&WorkSpecSource> {
         self.sources
             .iter()
             .filter(|source| source.kind == "FileGlob")
-            .map(|source| source.target.as_str())
             .collect()
     }
 
@@ -487,6 +496,7 @@ mod tests {
                     sources: vec![WorkSpecSource {
                         kind: "MetricInterval".to_string(),
                         target: "15s".to_string(),
+                        multiline: "none".to_string(),
                     }],
                 },
                 WorkSpecUnit {
@@ -498,10 +508,13 @@ mod tests {
                         WorkSpecSource {
                             kind: "Exporter".to_string(),
                             target: "sqlite-snapshot(TCC.db)".to_string(),
+                            multiline: "none".to_string(),
                         },
                         WorkSpecSource {
                             kind: "FileGlob".to_string(),
                             target: "/var/log/tccd/*".to_string(),
+                            // 多行格式是这条日志的固有属性，跟着来源走。
+                            multiline: "indented".to_string(),
                         },
                     ],
                 },
@@ -518,12 +531,26 @@ mod tests {
         assert!(decoded.collects_logs());
         // 取了最密的周期：要得最急的才是上送频率的下界。
         assert_eq!(decoded.metric_interval_seconds(), Some(15));
-        // 可本地 tail 的路径挑得出来，接不了的来源也报得出来（而不是当没看见）。
-        assert_eq!(decoded.units[1].file_globs(), vec!["/var/log/tccd/*"]);
+        // 可本地 tail 的来源挑得出来，接不了的来源也报得出来（而不是当没看见）。
+        let files = decoded.units[1].file_sources();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].target, "/var/log/tccd/*");
+        assert_eq!(files[0].multiline, "indented");
         assert_eq!(decoded.units[1].unsupported_sources().len(), 1);
+        assert_eq!(decoded.units[1].unsupported_sources()[0].kind, "Exporter");
+    }
+
+    #[test]
+    fn a_source_without_multiline_decodes_as_single_line() {
+        // 老网关发来的 spec 没有 `multiline`：默认必须是一行一条。
+        // 取错默认值会把多行日志**粘**成一条 —— 那是无声的内容损坏，不是格式问题。
+        let json = r#"{"units":[{"unit_id":"u","capability":"collect_logs","sources":[{"kind":"FileGlob","target":"/a/*"}]}]}"#;
+        let spec = WorkSpec::parse(json).expect("parse");
+        assert_eq!(spec.units[0].sources[0].multiline, "none");
+        // 再编码出去会把默认值写实：新网关发的 spec 字段总是齐的。
         assert_eq!(
-            decoded.units[1].unsupported_sources()[0].kind,
-            "Exporter"
+            spec.encode().expect("encode"),
+            r#"{"units":[{"unit_id":"u","capability":"collect_logs","rule_ref":"","requires_privilege":"","sources":[{"kind":"FileGlob","target":"/a/*","multiline":"none"}]}]}"#
         );
     }
 
@@ -534,7 +561,12 @@ mod tests {
         assert!(WorkSpec::parse("{").is_err());
         // 空工作本身是合法的（能表示「这个面暂时没东西可采」）。
         assert!(WorkSpec::parse(r#"{"units":[]}"#).unwrap().units.is_empty());
-        assert_eq!(WorkSpec::parse(r#"{"units":[]}"#).unwrap().metric_interval_seconds(), None);
+        assert_eq!(
+            WorkSpec::parse(r#"{"units":[]}"#)
+                .unwrap()
+                .metric_interval_seconds(),
+            None
+        );
     }
 
     #[test]
