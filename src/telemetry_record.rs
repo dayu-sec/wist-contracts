@@ -15,6 +15,17 @@ pub struct TelemetryRecord {
     /// 记录所属 input（spool/路由用），不进帧。
     pub input_id: String,
     pub source_path: String,
+    /// 记录来自**哪个采集面**（模型 `variant CollectionFamily`，闭集）与**哪条目录单元**
+    /// （如 `mac-launchd-service`）。
+    ///
+    /// 为什么要有它：正文规则没写时，`category` 恒为泛化的 `agent.log`，于是
+    /// 「这条来自哪个面」在数据里**没有位置** —— 两个面（如 launchd 与 wifi）一起跑就分不出来。
+    /// 空串 = 这条不是平台派活来的（本机运维手工加的输入），本身就是有用的信息。
+    /// 旧数据（或旧 spool 文件）无此字段时反序列化为空串。
+    #[serde(default)]
+    pub family: String,
+    #[serde(default)]
+    pub unit: String,
     pub body: String,
     pub file_offset: u64,
     pub file_offset_end: u64,
@@ -42,18 +53,35 @@ impl TelemetryRecord {
             observed_at,
             input_id,
             source_path,
+            family: String::new(),
+            unit: String::new(),
             body,
             file_offset,
             file_offset_end,
             seq,
         }
     }
+
+    /// 带上**来源身份**（采集面 + 目录单元）：会进数据帧，用于「这条来自哪个面」。
+    ///
+    /// 用链式而不是给 `new_log` 再加两个 `String` 参数：那里已经 8 个位置参数，
+    /// 全是 `String`，再加两个谁都能把面名和单元名填反。
+    pub fn with_origin(mut self, family: impl Into<String>, unit: impl Into<String>) -> Self {
+        self.family = family.into();
+        self.unit = unit.into();
+        self
+    }
 }
 
 /// 数据帧信封（数据平面 TCP 帧的 JSON 信封部分，短名）。
 ///
-/// 帧完整形态为 `{envelope} LOGRAW: <正文>`；本结构只对应信封 `{schema, agent, ts, seq}`，
-/// 正文不进 JSON、不转义。字段用 `#[serde(rename)]` 映射线上短名；`agent` 向后兼容（缺省为空串）。
+/// 帧完整形态为 `{envelope} LOGRAW: <正文>`；本结构只对应信封
+/// `{schema, agent, ts, seq, family?, unit?}`，正文不进 JSON、不转义。
+/// 字段用 `#[serde(rename)]` 映射线上短名；`agent` 向后兼容（缺省为空串）。
+///
+/// `family` / `unit`：**采集面**（闭集，见 `doc/design/center/collection-families.md`）
+/// 与目录单元 id。**空则不出现在帧里** —— 这样本机手工输入与旧帧逐字节不变，
+/// 数据面用 `opt(...)` 读也就有了明确语义（读不到 = 不是派活来的）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataFrame {
     #[serde(rename = "schema")]
@@ -63,6 +91,10 @@ pub struct DataFrame {
     #[serde(rename = "ts")]
     pub observed_at: String,
     pub seq: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub family: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
 }
 
 impl From<&TelemetryRecord> for DataFrame {
@@ -72,6 +104,8 @@ impl From<&TelemetryRecord> for DataFrame {
             agent_id: record.agent_id.clone(),
             observed_at: record.observed_at.clone(),
             seq: record.seq,
+            family: record.family.clone(),
+            unit: record.unit.clone(),
         }
     }
 }
@@ -86,6 +120,8 @@ impl DataFrame {
             agent_id: agent_id.into(),
             observed_at: observed_at.into(),
             seq,
+            family: String::new(),
+            unit: String::new(),
         }
     }
 }
@@ -144,13 +180,41 @@ mod tests {
     }
 
     #[test]
+    fn data_frame_carries_the_origin_and_omits_it_when_unknown() {
+        // 空的面/单元**不出现这个键**：本机手工输入与旧帧逐字节不变，
+        // 数据面用 `opt(...)` 读也就有明确语义（读不到 = 不是派活来的）。
+        let pulled = record().with_origin("ServiceLifecycle", "mac-launchd-service");
+        assert_eq!(
+            serde_json::to_string(&DataFrame::from(&pulled)).expect("serialize"),
+            r#"{"schema":"v1","agent":"agent-001","ts":"2026-04-14T00:00:00Z","seq":7,"family":"ServiceLifecycle","unit":"mac-launchd-service"}"#
+        );
+        // 旧帧（没有这两个键）仍能反序列化。
+        let old: DataFrame =
+            serde_json::from_str(r#"{"schema":"v1","agent":"a","ts":"t","seq":1}"#)
+                .expect("deserialize");
+        assert_eq!(old.family, "");
+        assert_eq!(old.unit, "");
+    }
+
+    #[test]
     fn data_frame_from_record_maps_fields() {
-        let record = record();
+        let record = record().with_origin("NetworkFirewall", "mac-network-wifi");
         let frame = DataFrame::from(&record);
         assert_eq!(frame.schema_version, record.schema_version);
         assert_eq!(frame.agent_id, record.agent_id);
         assert_eq!(frame.observed_at, record.observed_at);
         assert_eq!(frame.seq, record.seq);
+        assert_eq!(frame.family, "NetworkFirewall");
+        assert_eq!(frame.unit, "mac-network-wifi");
+    }
+
+    #[test]
+    fn a_record_without_origin_still_round_trips() {
+        // 旧 spool 文件里的记录没有这两个字段：读出来是空串，不能报错。
+        let json = r#"{"schema_version":"v1","agent_id":"a","observed_at":"t","input_id":"i","source_path":"p","body":"b","file_offset":0,"file_offset_end":1,"seq":0}"#;
+        let decoded: TelemetryRecord = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(decoded.family, "");
+        assert_eq!(decoded.unit, "");
     }
 
     #[test]

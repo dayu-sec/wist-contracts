@@ -288,6 +288,7 @@ impl Default for LogsTcpOutputSection {
 pub struct LogFileInputSection {
     pub input_id: String,
     pub path: String,
+    /// 首次读到这个文件时从哪里开始：`tail`（默认，只采新增）| `head`（从文件头读一遍）。
     #[serde(default = "default_startup_position")]
     pub startup_position: String,
     #[serde(default = "default_multiline_mode")]
@@ -390,8 +391,15 @@ fn default_multiline_mode() -> String {
     "none".to_string()
 }
 
+/// 本地配置（`[[telemetry.logs.file_inputs]]`）里 `startup_position` 不写时的默认值：**`tail`**（只采新增）。
+///
+/// 与授权派活同口径（agentd 折算工作时写死 `tail`，见 `AppliedWorkGrant::log_inputs`）：
+/// 默认**不重放历史** —— 从文件头读会把几百 MB 的存量日志在启动瞬间灌进数据面，
+/// 而“想看历史”是运维的一次性动作，应当显式写 `startup_position = "head"`。
+///
+/// 同类工具也是这个方向：Fluent Bit 的 `read_from_head` 默认为 false。
 fn default_startup_position() -> String {
-    "head".to_string()
+    "tail".to_string()
 }
 
 fn default_discovery_host_enabled() -> bool {
@@ -404,4 +412,30 @@ fn default_discovery_network_enabled() -> bool {
 
 fn default_discovery_endpoint_enabled() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_input_without_startup_position_starts_from_the_tail() {
+        // 契约默认值：不写 = **tail**（只采新增）。它决定了「运维本地加一条输入，
+        // 第一次跑会不会把整个历史文件灌进数据面」，所以在这里钉住。
+        let input: LogFileInputSection =
+            serde_json::from_str(r#"{"input_id":"app","path":"/var/log/app.log"}"#)
+                .expect("decode");
+        assert_eq!(input.startup_position, "tail");
+        assert_eq!(input.multiline_mode, "none");
+    }
+
+    #[test]
+    fn an_explicit_startup_position_still_wins() {
+        // 要看历史得自己写出来 —— 显式值不能被默认值盖掉。
+        let input: LogFileInputSection = serde_json::from_str(
+            r#"{"input_id":"app","path":"/var/log/app.log","startup_position":"head"}"#,
+        )
+        .expect("decode");
+        assert_eq!(input.startup_position, "head");
+    }
 }

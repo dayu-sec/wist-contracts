@@ -337,6 +337,41 @@ impl WorkSpec {
     }
 }
 
+/// agentd **能真的执行**的来源 kind（其余 kind 会被如实报成 `unsupported`，不当没看见）。
+///
+/// 注意：kind 对了**还不够** —— 目标形态也有限制，见 [`is_executable_source`]。
+/// 只按 kind 判会把「通配目标」当成可采，而那在采集端落不了地。
+pub const EXECUTABLE_SOURCE_KINDS: &[&str] = &["FileGlob", "MetricInterval"];
+
+/// 目标里有没有通配元字符 —— 有就说明它不是**显式单路径**。
+pub fn has_glob_meta(target: &str) -> bool {
+    target.contains(['*', '?', '['])
+}
+
+/// 这个目标是不是采集端今天**真能打开**的路径：**绝对路径、无通配**。
+///
+/// 采集端（agentd 第一版）只实现显式单路径输入：**不做 glob 展开、也不展开 `~`**
+/// （见 `wist/wist-agentd/docs/design/log-file-input-spec.md` §2 的能力边界）。
+/// 所以 `/var/log/wifi.log*`、`~/Library/Logs/Homebrew/*` 这类目标今天都采不到。
+pub fn is_explicit_path(target: &str) -> bool {
+    target.starts_with('/') && !has_glob_meta(target)
+}
+
+/// 一条来源今天**能不能被采**：`kind` 要 agentd 能执行，`target` 还要是显式路径。
+///
+/// 为什么把两件事放在一个函数里：网关的采集就绪度（「这个面能不能派下去」）与 agentd 的
+/// 「这条来源接不接得了」必须是**同一个判据**，否则会出现「网关说可采、agent 拿到后报
+/// unsupported」这种没人能发现的矛盾。加一种 kind 支持时**只改这里**。
+pub fn is_executable_source(kind: &str, target: &str) -> bool {
+    match kind {
+        // 本地文件采集：只支持显式绝对路径（无 glob、无 `~`）。
+        "FileGlob" => is_explicit_path(target),
+        // 指标：`target` 是采集周期（如 `15s`、`60s`），不是路径。
+        "MetricInterval" => true,
+        _ => false,
+    }
+}
+
 impl WorkSpecUnit {
     /// 该单元里可以交给本地文件采集器的来源（`FileGlob`）。
     ///
@@ -349,12 +384,22 @@ impl WorkSpecUnit {
             .collect()
     }
 
-    /// 本单元有没有 agentd 目前接不了的来源。
+    /// 本单元有没有 agentd 目前接不了的来源（kind 不认识，或目标不是显式路径）。
     pub fn unsupported_sources(&self) -> Vec<&WorkSpecSource> {
         self.sources
             .iter()
-            .filter(|source| !matches!(source.kind.as_str(), "FileGlob" | "MetricInterval"))
+            .filter(|source| !is_executable_source(&source.kind, &source.target))
             .collect()
+    }
+
+    /// 本单元至少有一条来源是 agentd **今天真能采**的。
+    ///
+    /// 「能不能采」只看这个：与解析规则（`rule_ref`）无关 —— 采原文不需要规则，
+    /// 规则只决定采下来的东西能不能被归类、抽字段。
+    pub fn has_executable_source(&self) -> bool {
+        self.sources
+            .iter()
+            .any(|source| is_executable_source(&source.kind, &source.target))
     }
 }
 
@@ -450,6 +495,29 @@ mod tests {
     }
 
     #[test]
+    fn only_explicit_absolute_paths_are_collectable_file_targets() {
+        // 采集端（agentd 第一版）只实现**显式单路径**：不做 glob 展开、不展开 `~`。
+        // 这个判据被两侧共用（网关的采集就绪度 + agentd 的接受逻辑），所以在这里钉死。
+        assert!(is_explicit_path("/var/log/install.log"));
+        assert!(!is_explicit_path("/var/log/wifi.log*"));
+        assert!(!is_explicit_path("/Library/Logs/DiagnosticReports/*.ips"));
+        assert!(!is_explicit_path("~/Library/Logs/Homebrew/*"));
+        assert!(!is_explicit_path("relative/app.log"));
+    }
+
+    #[test]
+    fn executability_needs_both_a_supported_kind_and_a_supported_target() {
+        // 指标：`target` 是周期不是路径，不管显式路径那一条。
+        assert!(is_executable_source("MetricInterval", "15s"));
+        // 文件：kind 对了，目标还得是显式路径 —— 否则网关会把采不到的面报成“可采”。
+        assert!(is_executable_source("FileGlob", "/var/log/app.log"));
+        assert!(!is_executable_source("FileGlob", "/var/log/app*"));
+        // 还没实现的 kind：一律不可执行。
+        assert!(!is_executable_source("Exporter", "last,lastb"));
+        assert!(!is_executable_source("UnifiedLogPredicate", "syspolicyd"));
+    }
+
+    #[test]
     fn grant_round_trips_with_serde() {
         let grant = WorkGrant {
             agent_id: "agent-1".to_string(),
@@ -512,7 +580,8 @@ mod tests {
                         },
                         WorkSpecSource {
                             kind: "FileGlob".to_string(),
-                            target: "/var/log/tccd/*".to_string(),
+                            // 显式单路径：采集端今天只能执行这种（通配未实现）。
+                            target: "/var/log/tccd.log".to_string(),
                             // 多行格式是这条日志的固有属性，跟着来源走。
                             multiline: "indented".to_string(),
                         },
@@ -534,10 +603,30 @@ mod tests {
         // 可本地 tail 的来源挑得出来，接不了的来源也报得出来（而不是当没看见）。
         let files = decoded.units[1].file_sources();
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].target, "/var/log/tccd/*");
+        assert_eq!(files[0].target, "/var/log/tccd.log");
         assert_eq!(files[0].multiline, "indented");
         assert_eq!(decoded.units[1].unsupported_sources().len(), 1);
         assert_eq!(decoded.units[1].unsupported_sources()[0].kind, "Exporter");
+    }
+
+    #[test]
+    fn a_glob_file_source_counts_as_unsupported() {
+        // 类型是 FileGlob（"可 tail 的文件"）不等于可采：**目标形态**也得是采集端能执行的。
+        // 否则网关会把一个根本采不到的面报成“可采”，而 agentd 那边只会报“路径不存在”。
+        let unit = WorkSpecUnit {
+            unit_id: "mac-wifi".to_string(),
+            capability: "collect_logs".to_string(),
+            rule_ref: String::new(),
+            requires_privilege: "root".to_string(),
+            sources: vec![WorkSpecSource {
+                kind: "FileGlob".to_string(),
+                target: "/var/log/wifi.log*".to_string(),
+                multiline: "none".to_string(),
+            }],
+        };
+        assert_eq!(unit.file_sources().len(), 1, "它仍是一条文件来源");
+        assert_eq!(unit.unsupported_sources().len(), 1, "但今天采不了");
+        assert!(!unit.has_executable_source());
     }
 
     #[test]
