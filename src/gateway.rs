@@ -42,9 +42,23 @@ pub struct AgentStatusReport {
     /// Own resident-set size in bytes reported by the agent.
     #[serde(default)]
     pub memory_bytes: Option<u64>,
-    /// Agent process CPU usage as a percentage over the last report interval.
+    /// Agent 进程自身 CPU 占用，**单核口径**（100% = 占满一个核；多线程进程可 >100）。
+    ///
+    /// 它只统计 agent 进程**自己**的 CPU 时间（`getrusage(RUSAGE_SELF)`），不含它拉起的子进程。
     #[serde(default)]
     pub cpu_percent: Option<f64>,
+    /// Agent 所在机器的**逻辑核数**（`available_parallelism`）。
+    ///
+    /// 为什么必须和 `cpu_percent` 同一份上报带上来：`cpu_percent` 是单核口径，
+    /// 而运维看图时真正常问的是「这台机器被它占了百分之几」——那是 `cpu_percent / 核数`。
+    /// 少了核数，右侧那个数既算不出来、也无法复核（4 核上的 13% 和 64 核上的 13% 完全不是一回事）。
+    ///
+    /// 为什么让 agent 报原始值、而不是它自己算好整机占比：沿用本仓已有的取舍
+    /// （与 `discovery_policy_version`、事实摘要 digest 同理）——agent 只交**原始事实**
+    /// （自己的 CPU 时间、自己的核数），换算只留一处，在网关。agent 自算的派生值
+    /// 一旦算法退化，下游没有任何一层能发现。
+    #[serde(default)]
+    pub cpu_cores: Option<u32>,
     /// Measured round-trip latency to the admin control plane in milliseconds.
     #[serde(default)]
     pub admin_latency_ms: Option<u64>,
