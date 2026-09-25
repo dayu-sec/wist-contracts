@@ -28,6 +28,8 @@ use serde::{Deserialize, Serialize};
 pub const POLL_WORK_KIND: &str = "poll_work";
 /// agentd → 网关：确认收到工作的 envelope kind。
 pub const ACK_WORK_KIND: &str = "ack_work";
+/// agentd → 网关：上报一次性工作执行结果的 envelope kind。
+pub const REPORT_WORK_RESULT_KIND: &str = "report_work_result";
 
 /// 常驻工作的状态取值（对应模型 `StandingWork.status`）。
 ///
@@ -47,6 +49,13 @@ pub const ONE_SHOT_WORK_STATUSES: [&str; 9] = [
     "canceled",
     "expired",
 ];
+
+/// Agent **允许上报**的一次性工作状态（[`ONE_SHOT_WORK_STATUSES`] 的真子集）。
+///
+/// 为什么不是全集：`dispatched` 是网关自己写的（派下去那一刻），`paused` / `canceled` / `expired`
+/// 归**控制面与期限**管（运维暂停撤回、或过了截止）—— agent 无权把它们写回去。
+/// 剩下的问题只有一种：「这件活做完了没有」，答案就这三种。
+pub const AGENT_REPORTABLE_WORK_STATUSES: [&str; 3] = ["running", "succeeded", "failed"];
 
 /// 一次性工作的**终态**：到了这几个状态就了结了，不再出现在快照里。
 pub const ONE_SHOT_TERMINAL_STATUSES: [&str; 5] =
@@ -230,6 +239,51 @@ pub struct AckWork {
 pub struct WorkAccepted {
     pub work_id: String,
     /// accepted | stale | unknown。
+    pub status: String,
+    pub accepted_at: String,
+}
+
+/// agentd → 网关：上报一次性工作的**执行结果**（进度与终态）。
+///
+/// 与 [`AckWork`] 的分工：确认回答「我收到了」，本消息回答「我做得怎么样了」。
+/// 两者分开是因为它们的**失败代价不同**：确认丢了只是页面晚一拍，结果丢了则意味着
+/// 「一件改变机器状态的活做完了，而控制面永远不知道它成没成」。
+///
+/// 为什么必须由 agent 上报而不是网关自己推：网关只知道派了什么；一件升级是否真的换上了、
+/// 失败了有没有回滚，只有在机器上的那个执行体知道。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(
+    kind = "message",
+    role = "command",
+    domain = "Control",
+    module = "Control.AgentApp.FacingInterface"
+)]
+#[serde(deny_unknown_fields)]
+pub struct ReportWorkResult {
+    pub api_version: String,
+    pub kind: String,
+    pub agent_id: String,
+    pub instance_id: String,
+    pub work_id: String,
+    /// 见 [`AGENT_REPORTABLE_WORK_STATUSES`]。
+    pub status: String,
+    /// 人看的说明：失败原因**原样带上**（如「摘要不符」「新版 60s 没起来，已回滚到 0.1.3」）。
+    /// 不写清原因，页面上就只剩一个无法解释的「失败」。
+    #[serde(default)]
+    pub detail: String,
+    pub reported_at: String,
+}
+
+/// 网关对 [`ReportWorkResult`] 的回应。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Control", module = "Control.Agent.Work")]
+#[serde(deny_unknown_fields)]
+pub struct WorkResultAccepted {
+    pub work_id: String,
+    /// accepted | stale | unknown。
+    ///
+    /// `stale` = 这件活已经到终态了（被撤回、超期，或已经报过终态），后到的结果**不覆盖**它：
+    /// 一件活只能有一个终态，写第二次只会把历史抹掉。
     pub status: String,
     pub accepted_at: String,
 }
