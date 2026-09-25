@@ -23,4 +23,4 @@ serde_json = "1.0"
 # 事实摘要的幂等键（`fact_summary::FactContent::content_digest`）需要 sha256。
 # 放在契约 crate 是有意的：agentd 与网关必须算出**同一个**摘要，两侧各写一份会静默失真。
 # 选 sha2 而不是 ring —— ring 不是纯 Rust（含 C/汇编），不该被数据结构 crate 拖进来。
-sha2 = "0.10"
+sha2 = "0.11"
