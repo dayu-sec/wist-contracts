@@ -72,6 +72,24 @@ pub struct AgentStatusReport {
     /// 也可能拿到后被夹取。而运维要回答的正是那句「我改了策略，哪些机器还没生效」。
     #[serde(default)]
     pub discovery_policy_version: Option<i64>,
+    /// 本机**工作内容视图**（`state/work.json` 的子集）：我手里有哪些工作、各自在采哪些文件、
+    /// 一次性工作做到哪一步。
+    ///
+    /// 为什么必须由 agent 上报：网关知道自己**授权**了什么，但「真的在采哪些文件」只有 agent
+    /// 知道（本机手工加的输入、暂停、某条来源今天接不接得了）。网关侧只存最近一份。
+    /// `None` = 这台 agent 还没报过（旧版本 agent 不发这个字段）。
+    #[serde(default)]
+    pub local_work: Option<crate::local_work::AgentLocalWork>,
+    /// 本机**实际生效**的采集输出状态（见 [`crate::agent_uplink::AgentUplinkState`]）。
+    ///
+    /// 为什么必须由 agent 上报：网关知道自己**下发**了「启用 + 目标」，但不知道 agent
+    /// **生效**成了什么 —— grant 可能还没拉到、可能被本机总闸拦住、可能目标连不上。
+    /// 运维要回答的正是那句「这台为什么不上送」。
+    ///
+    /// `None` = 这台 agent 还没报过（旧版本 agent 不发这个字段）—— 落库后保持上一次的值
+    /// （与 `local_work` 同口径）。
+    #[serde(default)]
+    pub uplink_state: Option<crate::agent_uplink::AgentUplinkState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]

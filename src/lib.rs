@@ -4,6 +4,7 @@ pub mod action_plan;
 pub mod action_result;
 pub mod agent_config;
 pub mod agent_state;
+pub mod agent_uplink;
 pub mod capability_report;
 pub mod discovery;
 pub mod discovery_policy;
@@ -13,6 +14,7 @@ pub mod exporter;
 pub mod fact_summary;
 pub mod gateway;
 pub mod ingest;
+pub mod local_work;
 pub mod telemetry_record;
 pub mod work;
 

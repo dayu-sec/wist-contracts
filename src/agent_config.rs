@@ -226,6 +226,24 @@ impl Default for LogsSection {
 #[jumo(kind = "struct", domain = "Discovery", module = "Discovery.Config")]
 #[serde(deny_unknown_fields)]
 pub struct LogsOutputSection {
+    /// 采集输出总闸：`false` = **不产出主机内容**（不写本地文件、不上送日志/指标帧）。
+    ///
+    /// 与 `kind` **正交**，不要混用：
+    ///   * `kind` 回答「写到哪」（`file` / `tcp`）；
+    ///   * `enabled` 回答「要不要写」。
+    ///
+    /// **但事实摘要不受这个闸门管**：待命期仍会上报（它是让平台能推断「这台机器是什么」的
+    /// 最小元数据 —— 进程列表 / 监听端口 / os / arch；没有它，新装机器在网关侧一片空白，
+    /// 连「该派什么活」都定不下来）。详见 `doc/design/telemetry/agent-uplink-authorization.md`。
+    ///
+    /// 之所以要拆开：此前用 `kind = "file"` 表达「待命」，于是待命态下事实帧走 file
+    /// 分支返回 `Err`，让默认配置持续打印 `fact summary uplink failed` —— 把正常状态
+    /// 报成了故障。待命是一种开关状态，不该由「写到哪」来表达。
+    ///
+    /// 默认 `true`：本地配置不写这个键时行为与从前一致（dev / standalone 不受影响）。
+    /// 「待命」由签发方（网关初始配置）显式写 `enabled = false` 表达。
+    #[serde(default = "default_logs_output_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_logs_output_kind")]
     pub kind: String,
     #[serde(default)]
@@ -237,6 +255,7 @@ pub struct LogsOutputSection {
 impl Default for LogsOutputSection {
     fn default() -> Self {
         Self {
+            enabled: default_logs_output_enabled(),
             kind: default_logs_output_kind(),
             file: LogsFileOutputSection::default(),
             tcp: LogsTcpOutputSection::default(),
@@ -371,6 +390,11 @@ fn default_logs_output_file() -> String {
     "log/wist-records.ndjson".to_string()
 }
 
+/// 采集输出默认**开**：不写这个键的既有本地配置行为不变。
+fn default_logs_output_enabled() -> bool {
+    true
+}
+
 fn default_logs_output_kind() -> String {
     "file".to_string()
 }
@@ -427,6 +451,33 @@ mod tests {
                 .expect("decode");
         assert_eq!(input.startup_position, "tail");
         assert_eq!(input.multiline_mode, "none");
+    }
+
+    #[test]
+    fn logs_output_rejects_unknown_keys() {
+        // 「旧 agentd 读不了含 enabled 的新初始配置」这个部署风险（见设计文档 §10）的**前提**
+        // 就在这里：本结构是 deny_unknown_fields，所以任何一端多写一个键，另一端（旧版）
+        // 会硬失败而不是忽略。钉住它 —— 免得有人把它改成宽松解析，以为「这样就兼容旧版了」
+        // （实际后果是旧版忽略 enabled、拿着 kind="tcp" 直接外发）。
+        assert!(serde_json::from_str::<LogsOutputSection>(r#"{"enabled":true,"nope":1}"#).is_err());
+    }
+
+    #[test]
+    fn an_output_section_without_enabled_is_on() {
+        // 向后兼容钉在这里：老配置没有 `enabled` 键时必须仍然产出。
+        // 若默认值被改成 false，所有既有 dev / standalone 安装会在升级后静默停采。
+        let output: LogsOutputSection = serde_json::from_str(r#"{"kind":"tcp"}"#).expect("decode");
+        assert!(output.enabled);
+        assert!(LogsOutputSection::default().enabled);
+    }
+
+    #[test]
+    fn an_explicit_disabled_output_is_respected() {
+        // 待命由签发方显式写出来，显式值不能被默认值盖掉。
+        let output: LogsOutputSection =
+            serde_json::from_str(r#"{"enabled":false,"kind":"tcp"}"#).expect("decode");
+        assert!(!output.enabled);
+        assert_eq!(output.kind, "tcp");
     }
 
     #[test]
