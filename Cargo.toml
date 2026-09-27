@@ -1,9 +1,8 @@
 [package]
 name = "wist-contracts"
-version = "0.1.4" #@gxl:set(version)
+version = "0.1.5" #@gxl:set(version)
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.85"
 authors = ["wist Dev Team"]
 description = "Versioned contract and schema objects shared by the wist edge and center components"
 repository = "https://github.com/dayu-sec/wist-contracts"
