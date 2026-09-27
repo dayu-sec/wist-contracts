@@ -489,4 +489,54 @@ mod tests {
         .expect("decode");
         assert_eq!(input.startup_position, "head");
     }
+
+    #[test]
+    fn a_discovery_section_omitted_whole_defaults_process_on_but_an_inline_omission_defaults_it_off()
+     {
+        // 这是**有意**的、也是文档写明的两套默认（见 wist-agentd
+        // docs/design/agent-config-schema.md §8）：
+        //   * 整段 `[discovery]` 不写 → DiscoverySection::default() → process = true；
+        //   * 写了 `[discovery]` 但段内省略 process_enabled → serde 逐字段默认 → false。
+        // 极易在重构默认值时被「顺手统一」掉，所以在这里钉死两侧。
+        assert!(DiscoverySection::default().process_enabled);
+        assert!(DiscoverySection::default().host_enabled);
+
+        let inline: DiscoverySection = serde_json::from_str("{}").expect("decode");
+        assert!(
+            !inline.process_enabled,
+            "段内省略 process_enabled 必须是 false"
+        );
+        assert!(inline.host_enabled, "段内省略 host_enabled 仍是 true");
+
+        // 整段缺省：走 Default，process 为 true。
+        let whole_missing: AgentConfig =
+            serde_json::from_str(r#"{"schema_version":"v1"}"#).expect("decode");
+        assert!(whole_missing.discovery.process_enabled);
+
+        // 段存在但为空：走 serde 逐字段默认，process 为 false。
+        let empty_section: AgentConfig =
+            serde_json::from_str(r#"{"schema_version":"v1","discovery":{}}"#).expect("decode");
+        assert!(!empty_section.discovery.process_enabled);
+    }
+
+    #[test]
+    fn agent_config_rejects_unknown_fields() {
+        // 合同是两侧共用的字节：多出来的键必须硬失败。
+        assert!(
+            serde_json::from_str::<AgentConfig>(r#"{"schema_version":"v1","nope":1}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn agent_config_new_fills_the_version_and_default_sections() {
+        let config = AgentConfig::new(
+            AgentSection::default(),
+            ControlPlaneSection::default(),
+            PathsSection::default(),
+            ExecutionSection::default(),
+        );
+        assert_eq!(config.schema_version, SCHEMA_VERSION_V1);
+        assert_eq!(config.telemetry, TelemetrySection::default());
+        assert_eq!(config.discovery, DiscoverySection::default());
+    }
 }

@@ -20,6 +20,7 @@ pub enum AgentWorkState {
 
 /// 工作状态变化（非告警、非失败）：暂停/恢复各上报一次。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentWorkStateChange {
     pub input_id: String,
     pub state: AgentWorkState,
@@ -572,5 +573,260 @@ impl DiscoveryPoliciesReturned {
             policies: set.policies.clone(),
             returned_at,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan() -> ActionPlan {
+        serde_json::from_str(
+            r#"{"api_version":"v1","kind":"action_plan",
+                "meta":{"action_id":"act-1","request_id":"req-1","template_id":null,
+                        "tenant_id":"t","environment_id":"e","plan_version":1,
+                        "compiled_at":"2026-09-27T00:00:00Z","expires_at":"2026-09-28T00:00:00Z"},
+                "target":{"agent_id":"agent-1","instance_id":null,"node_id":"n","host_name":null,
+                          "platform":"macos","arch":"arm64","selectors":{}},
+                "constraints":{"risk_level":"R1","approval_ref":null,"approval_mode":"not_required",
+                               "requested_by":"admin","reason":null,"max_total_duration_ms":1000,
+                               "step_timeout_default_ms":500,"execution_profile":"default",
+                               "required_capabilities":[]},
+                "program":{"entry":"s1","steps":[{"id":"s1","kind":"invoke","op":"shell"}]}}"#,
+        )
+        .expect("plan")
+    }
+
+    fn attestation() -> ResultAttestation {
+        ResultAttestation {
+            result_digest: "sha256:abc".to_string(),
+            signature: "dev-placeholder:sig".to_string(),
+            issued_by: "dev-placeholder:agent-1".to_string(),
+            attested_at: "2026-09-27T00:00:02Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn dispatch_action_plan_new_stamps_the_envelope() {
+        let dispatch = DispatchActionPlan::new("disp-1".to_string(), plan());
+        assert_eq!(dispatch.api_version, API_VERSION_V1);
+        assert_eq!(dispatch.kind, DISPATCH_ACTION_PLAN_KIND);
+
+        let json = serde_json::to_string(&dispatch).expect("encode");
+        let back: DispatchActionPlan = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, dispatch);
+    }
+
+    #[test]
+    fn action_plan_ack_builder_and_new_stamp_the_envelope() {
+        let built =
+            ActionPlanAck::builder("disp-1".to_string(), "act-1".to_string(), AckStatus::Queued)
+                .plan_digest("sha256:plan".to_string())
+                .agent_id("agent-1".to_string())
+                .instance_id("inst-1".to_string())
+                .queue_position(Some(3))
+                .received_at("2026-09-27T00:00:00Z".to_string())
+                .acknowledged_at("2026-09-27T00:00:01Z".to_string())
+                .build();
+        assert_eq!(built.api_version, API_VERSION_V1);
+        assert_eq!(built.kind, ACTION_PLAN_ACK_KIND);
+        assert_eq!(built.queue_position, Some(3));
+        assert_eq!(built.reason_code, None);
+
+        let constructed = ActionPlanAck::new(
+            "disp-1".to_string(),
+            "act-1".to_string(),
+            "sha256:plan".to_string(),
+            "agent-1".to_string(),
+            "inst-1".to_string(),
+            None,
+            AckStatus::Accepted,
+            "2026-09-27T00:00:00Z".to_string(),
+            "2026-09-27T00:00:01Z".to_string(),
+        );
+        assert_eq!(constructed.kind, ACTION_PLAN_ACK_KIND);
+
+        let json = serde_json::to_string(&constructed).expect("encode");
+        let back: ActionPlanAck = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, constructed);
+    }
+
+    #[test]
+    fn ack_status_uses_the_wire_names_and_rejects_unknown_variants() {
+        for (status, name) in [
+            (AckStatus::Accepted, "accepted"),
+            (AckStatus::Rejected, "rejected"),
+            (AckStatus::Queued, "queued"),
+            (AckStatus::Duplicate, "duplicate"),
+            (AckStatus::Stale, "stale"),
+            (AckStatus::Busy, "busy"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&status).unwrap(),
+                format!("\"{name}\"")
+            );
+        }
+        assert!(serde_json::from_str::<AckStatus>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn report_action_result_new_sets_kind_and_leaves_dispatch_absent() {
+        let result = ActionResult::new(
+            "act-1".to_string(),
+            "exec-1".to_string(),
+            FinalStatus::Succeeded,
+        );
+        let report = ReportActionResult::new(
+            "rep-1".to_string(),
+            "act-1".to_string(),
+            1,
+            FinalStatus::Succeeded,
+            "exec-1".to_string(),
+            "sha256:plan".to_string(),
+            "agent-1".to_string(),
+            "inst-1".to_string(),
+            attestation(),
+            "2026-09-27T00:00:02Z".to_string(),
+            result,
+        );
+        assert_eq!(report.api_version, API_VERSION_V1);
+        assert_eq!(report.kind, REPORT_ACTION_RESULT_KIND);
+        assert_eq!(report.dispatch_id, None);
+
+        let json = serde_json::to_string(&report).expect("encode");
+        let back: ReportActionResult = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, report);
+    }
+
+    #[test]
+    fn agent_work_state_uses_snake_case_on_the_wire() {
+        assert_eq!(
+            serde_json::to_string(&AgentWorkState::Paused).unwrap(),
+            "\"paused\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentWorkState::Resumed).unwrap(),
+            "\"resumed\""
+        );
+        let change = AgentWorkStateChange {
+            input_id: "app".to_string(),
+            state: AgentWorkState::Paused,
+            reason: "spool_over_limit".to_string(),
+            at: "2026-09-27T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&change).expect("encode");
+        let back: AgentWorkStateChange = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, change);
+
+        // 与同族的 AgentStatusReport 一致：拒绝未知字段，避免字段漂移静默通过。
+        let mutated = json.replacen('{', "{\"extra\":1,", 1);
+        assert!(serde_json::from_str::<AgentWorkStateChange>(&mutated).is_err());
+    }
+
+    #[test]
+    fn a_minimal_agent_status_report_decodes_and_extra_keys_fail() {
+        // 旧版 agent 只发三个必填字段；其余全是 #[serde(default)]。
+        let json = r#"{"agent_id":"a","instance_id":"i","version":"0.1.5"}"#;
+        let report: AgentStatusReport = serde_json::from_str(json).expect("decode");
+        assert_eq!(report.memory_bytes, None);
+        assert_eq!(report.cpu_percent, None);
+        assert_eq!(report.work_state_changes, None);
+        assert_eq!(report.discovery_policy_version, None);
+        assert!(report.local_work.is_none());
+        assert!(report.uplink_state.is_none());
+
+        assert!(
+            serde_json::from_str::<AgentStatusReport>(
+                r#"{"agent_id":"a","instance_id":"i","version":"v","nope":1}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn fact_summary_ack_status_uses_snake_case_and_rejects_unknown() {
+        assert_eq!(
+            serde_json::to_string(&FactSummaryAckStatus::Duplicate).unwrap(),
+            "\"duplicate\""
+        );
+        assert!(serde_json::from_str::<FactSummaryAckStatus>("\"nope\"").is_err());
+    }
+
+    #[test]
+    fn new_agent_facts_defaults_display_fields_then_with_display_fills_them() {
+        let summary = ReportAgentFactSummary::new_agent_facts(
+            "fact_1".to_string(),
+            "agent-1".to_string(),
+            "inst-1".to_string(),
+            "fact-v1:sha256:abc".to_string(),
+            7,
+            "2026-09-27T00:00:00Z".to_string(),
+            "macos".to_string(),
+            "arm64".to_string(),
+            3,
+            vec!["/usr/bin/a".to_string()],
+            Vec::new(),
+            vec!["443".to_string()],
+            "2026-09-27T00:00:01Z".to_string(),
+        );
+        assert_eq!(summary.kind, REPORT_AGENT_FACT_SUMMARY_KIND);
+        assert!(summary.host_id.is_empty());
+        assert!(summary.network_addresses.is_empty());
+
+        let with_display = summary.with_display(
+            "host-id".to_string(),
+            "host-name".to_string(),
+            vec!["en0 10.0.0.1/24".to_string()],
+        );
+        assert_eq!(with_display.host_id, "host-id");
+        assert_eq!(with_display.host_name, "host-name");
+
+        let json = serde_json::to_string(&with_display).expect("encode");
+        let back: ReportAgentFactSummary = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, with_display);
+    }
+
+    #[test]
+    fn discovery_policies_returned_from_set_copies_the_versioned_table() {
+        let set = DiscoveryAspectPolicySet::new(
+            4,
+            "2026-09-27T00:00:00Z".to_string(),
+            vec![DiscoveryAspectPolicy {
+                aspect: "host".to_string(),
+                default_interval_seconds: 900,
+                min_interval_seconds: 60,
+                max_interval_seconds: 3600,
+                baseline: true,
+                enabled_by_default: true,
+                platforms: vec!["macos".to_string(), "linux".to_string()],
+                yields: "os/arch".to_string(),
+            }],
+        );
+        let returned =
+            DiscoveryPoliciesReturned::from_set(&set, "2026-09-27T00:00:01Z".to_string());
+        assert_eq!(returned.policy_version, 4);
+        assert_eq!(returned.policies, set.policies);
+        assert_eq!(returned.returned_at, "2026-09-27T00:00:01Z");
+
+        let json = serde_json::to_string(&returned).expect("encode");
+        let back: DiscoveryPoliciesReturned = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, returned);
+    }
+
+    #[test]
+    fn poll_discovery_policies_round_trips_and_rejects_unknown_fields() {
+        let poll = PollDiscoveryPolicies {
+            api_version: API_VERSION_V1.to_string(),
+            kind: POLL_DISCOVERY_POLICIES_KIND.to_string(),
+            agent_id: "agent-1".to_string(),
+            instance_id: "inst-1".to_string(),
+            requested_at: "2026-09-27T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&poll).expect("encode");
+        let back: PollDiscoveryPolicies = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, poll);
+
+        let mutated = json.replacen('{', "{\"extra\":1,", 1);
+        assert!(serde_json::from_str::<PollDiscoveryPolicies>(&mutated).is_err());
     }
 }

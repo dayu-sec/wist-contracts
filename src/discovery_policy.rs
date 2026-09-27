@@ -170,4 +170,30 @@ mod tests {
         let json = r#"{"policy_version":1,"published_at":"x","policies":[],"extra":true}"#;
         assert!(serde_json::from_str::<DiscoveryAspectPolicySet>(json).is_err());
     }
+
+    #[test]
+    fn an_empty_table_has_no_policy_for_any_aspect() {
+        // 未配置的表与「配了一个空表」在这里是同形的：调用方据此回退到自己的内建默认值。
+        let set = DiscoveryAspectPolicySet::new(0, "2026-09-27T00:00:00Z".to_string(), Vec::new());
+        for aspect in DISCOVERY_ASPECTS {
+            assert_eq!(set.interval_seconds_for(aspect), None, "{aspect}");
+            assert!(set.for_aspect(aspect).is_none(), "{aspect}");
+        }
+    }
+
+    #[test]
+    fn omitted_optional_fields_decode_to_stable_defaults() {
+        // 手写策略表（页面、联调）不写 platforms/yields 时应能解析，而不是报缺字段。
+        let set: DiscoveryAspectPolicySet =
+            serde_json::from_str(r#"{"policy_version":1,"published_at":"t"}"#).expect("decode");
+        assert!(set.policies.is_empty());
+
+        let policy: DiscoveryAspectPolicy =
+            serde_json::from_str(
+                r#"{"aspect":"host","default_interval_seconds":900,"min_interval_seconds":60,"max_interval_seconds":3600,"baseline":true,"enabled_by_default":true}"#,
+            )
+            .expect("decode");
+        assert!(policy.platforms.is_empty());
+        assert_eq!(policy.yields, "");
+    }
 }

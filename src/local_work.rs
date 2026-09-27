@@ -85,3 +85,57 @@ pub struct AgentLocalWork {
     #[serde(default)]
     pub metrics_interval_seconds: Option<i64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_minimal_report_decodes_with_empty_collections() {
+        // 只报「我算过一份视图」时，四类列表与周期都不写也应能解析。
+        let json = r#"{"recorded_at":"2026-09-27T00:00:00Z","gateway_sequence":4}"#;
+        let work: AgentLocalWork = serde_json::from_str(json).expect("decode");
+        assert!(work.standing.is_empty());
+        assert!(work.one_shot.is_empty());
+        assert!(work.local_inputs.is_empty());
+        assert_eq!(work.metrics_interval_seconds, None);
+    }
+
+    #[test]
+    fn a_full_report_round_trips_and_rejects_unknown_fields() {
+        let work = AgentLocalWork {
+            recorded_at: "2026-09-27T00:00:00Z".to_string(),
+            gateway_sequence: 9,
+            standing: vec![AgentLocalStandingWork {
+                work_id: "work-1".to_string(),
+                family: "ServiceLifecycle".to_string(),
+                status: "active".to_string(),
+                plan_version: 2,
+                acknowledged_version: Some(2),
+                effective_from: "2026-09-27T00:00:00Z".to_string(),
+                tasks: vec![AgentLocalTask {
+                    input_id: "app".to_string(),
+                    path: "/var/log/app.log".to_string(),
+                    startup_position: "tail".to_string(),
+                }],
+            }],
+            one_shot: vec![AgentLocalOneShotWork {
+                work_id: "work-2".to_string(),
+                action: "upgrade".to_string(),
+                status: "dispatched".to_string(),
+                execution: "unexecuted".to_string(),
+                scheduled_at: "2026-09-27T00:00:00Z".to_string(),
+                deadline_at: "2026-09-28T00:00:00Z".to_string(),
+                timeout_seconds: 600,
+            }],
+            local_inputs: Vec::new(),
+            metrics_interval_seconds: Some(15),
+        };
+        let json = serde_json::to_string(&work).expect("encode");
+        let back: AgentLocalWork = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, work);
+
+        let mutated = json.replacen('{', "{\"extra\":1,", 1);
+        assert!(serde_json::from_str::<AgentLocalWork>(&mutated).is_err());
+    }
+}

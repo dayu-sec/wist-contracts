@@ -183,7 +183,7 @@ pub struct PolicyBinding {
 #[cfg(test)]
 mod tests {
     use super::{
-        CredentialRenewal, EnrollmentEnvelope, EnrollmentOutcome, EnrollmentStatus,
+        CredentialRenewal, EnrollmentEnvelope, EnrollmentOutcome, EnrollmentStatus, HostProfile,
         RENEW_AGENT_CREDENTIAL_KIND,
     };
 
@@ -225,5 +225,50 @@ mod tests {
         let decoded: CredentialRenewal = serde_json::from_str(&encoded).expect("decode");
         assert_eq!(decoded.api_version, "v1");
         assert_eq!(decoded.kind, RENEW_AGENT_CREDENTIAL_KIND);
+    }
+
+    #[test]
+    fn enrollment_status_uses_wire_names_and_rejects_unknown_variants() {
+        for (status, name) in [
+            (EnrollmentStatus::Accepted, "accepted"),
+            (EnrollmentStatus::Rejected, "rejected"),
+            (EnrollmentStatus::PendingReview, "pending_review"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&status).unwrap(),
+                format!("\"{name}\"")
+            );
+        }
+        assert!(serde_json::from_str::<EnrollmentStatus>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn host_profile_round_trips_and_rejects_unknown_fields() {
+        let profile = HostProfile {
+            node_id: "node-1".to_string(),
+            hostname: "host-1".to_string(),
+            os: "macos".to_string(),
+            arch: "arm64".to_string(),
+            machine_id: "mid-1".to_string(),
+            cloud_instance_id: None,
+            k8s_node_uid: None,
+            ip_addresses: vec!["10.0.0.1".to_string()],
+        };
+        let json = serde_json::to_string(&profile).expect("encode");
+        let back: HostProfile = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, profile);
+
+        let mutated = json.replacen('{', "{\"extra\":1,", 1);
+        assert!(serde_json::from_str::<HostProfile>(&mutated).is_err());
+    }
+
+    #[test]
+    fn an_outcome_without_optional_payloads_decodes() {
+        // 拒绝的注册只带 status/reason_code：其余 Option 字段缺省即可。
+        let json = r#"{"result":{"status":"rejected","reason_code":"bad_token"}}"#;
+        let envelope: EnrollmentEnvelope = serde_json::from_str(json).expect("decode");
+        assert_eq!(envelope.result.status, EnrollmentStatus::Rejected);
+        assert!(envelope.result.issued_identity.is_none());
+        assert!(envelope.result.credential_bundle.is_none());
     }
 }

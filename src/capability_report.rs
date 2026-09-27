@@ -105,3 +105,60 @@ pub struct CapabilityLimits {
     pub max_memory_bytes: Option<u64>,
     pub max_metrics_targets: Option<u32>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sections() -> CapabilityReportSections {
+        CapabilityReportSections {
+            agent_id: "agent-1".to_string(),
+            instance_id: "inst-1".to_string(),
+            reported_at: "2026-09-27T00:00:00Z".to_string(),
+            exec: ExecCapabilities {
+                opcodes: vec!["shell".to_string()],
+                execution_profiles: vec!["default".to_string()],
+            },
+            metrics: MetricsCapabilities {
+                collectors: vec!["host".to_string()],
+                ..MetricsCapabilities::default()
+            },
+            logs: None,
+            upgrade: UpgradeCapabilities {
+                supported: true,
+                features: vec!["atomic".to_string()],
+            },
+            limits: CapabilityLimits {
+                max_running_actions: Some(1),
+                ..CapabilityLimits::default()
+            },
+        }
+    }
+
+    #[test]
+    fn new_stamps_the_schema_version_and_carries_sections() {
+        let report = CapabilityReport::new(sections());
+        assert_eq!(report.schema_version, SCHEMA_VERSION_V1);
+        assert_eq!(report.agent_id, "agent-1");
+        assert!(report.logs.is_none());
+    }
+
+    #[test]
+    fn report_round_trips_and_rejects_unknown_fields() {
+        let report = CapabilityReport::new(sections());
+        let json = serde_json::to_string(&report).expect("encode");
+        let back: CapabilityReport = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, report);
+
+        let mutated = json.replacen('{', "{\"extra\":1,", 1);
+        assert!(serde_json::from_str::<CapabilityReport>(&mutated).is_err());
+    }
+
+    #[test]
+    fn an_all_none_limits_struct_decodes_from_an_empty_object() {
+        // Option 字段在 serde 里天然可缺省（不需要 #[serde(default)]）：
+        // 整份 limits 不写也应能解析成全 None，而不是报缺字段。
+        let limits: CapabilityLimits = serde_json::from_str("{}").expect("decode");
+        assert_eq!(limits, CapabilityLimits::default());
+    }
+}

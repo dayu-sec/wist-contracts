@@ -468,7 +468,10 @@ pub fn parse_interval_seconds(raw: &str) -> Option<i64> {
     }
     if let Some(value) = raw.strip_suffix('m') {
         let minutes = value.trim().parse::<i64>().ok()?;
-        return Some(minutes * 60).filter(|value| *value > 0);
+        // `checked_mul`：`123456789012345678m` 这类输入会让 `minutes * 60` 溢出 i64。
+        // 契约是「解析不了返回 None」（调用方回退到自己的默认值），不能让它 panic（debug）
+        // 或悄悄回绕成一个错的间隔（release）。
+        return minutes.checked_mul(60).filter(|value| *value > 0);
     }
     None
 }
@@ -721,5 +724,42 @@ mod tests {
         assert_eq!(parse_interval_seconds("15"), None);
         assert_eq!(parse_interval_seconds("0s"), None);
         assert_eq!(parse_interval_seconds(""), None);
+    }
+
+    #[test]
+    fn interval_parsing_never_overflows_on_huge_values() {
+        // 契约是「解析不了返回 None」，不是 panic：溢出在 debug 下 panic、release 下回绕成一个
+        // 错误的间隔 —— 两个后果都不能接受。这是两侧都要解析的字节，输入可能来自远端。
+        assert_eq!(parse_interval_seconds("922337203685477580m"), None);
+        assert_eq!(parse_interval_seconds("153722867280912931m"), None);
+        // 秒分支本来就靠 parse 失败兜底。
+        assert_eq!(parse_interval_seconds("99999999999999999999s"), None);
+        // 合法但很大的分钟值仍要算得出来（不误伤）。
+        assert_eq!(parse_interval_seconds("600m"), Some(36_000));
+    }
+
+    #[test]
+    fn metric_interval_ignores_unparseable_targets_instead_of_treating_them_as_zero() {
+        // 认不出的周期不能静默当 0（0 会被当成「无限密」），而要如实跳过，只取能解析的最密值。
+        let unit = |target: &str| WorkSpecUnit {
+            unit_id: "u".to_string(),
+            capability: "collect_metrics".to_string(),
+            rule_ref: String::new(),
+            requires_privilege: String::new(),
+            sources: vec![WorkSpecSource {
+                kind: "MetricInterval".to_string(),
+                target: target.to_string(),
+                multiline: "none".to_string(),
+            }],
+        };
+        let mixed = WorkSpec {
+            units: vec![unit("garbage"), unit("30s")],
+        };
+        assert_eq!(mixed.metric_interval_seconds(), Some(30));
+
+        let all_bad = WorkSpec {
+            units: vec![unit("nope")],
+        };
+        assert_eq!(all_bad.metric_interval_seconds(), None);
     }
 }

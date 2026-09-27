@@ -24,14 +24,19 @@ consumer.
 | `action_result`     | The result of an execution.                          |
 | `agent_config`      | The `wist-agentd` runtime configuration (`agentd.toml`). |
 | `agent_state`       | Agent runtime state (identity, credentials, mode).   |
+| `agent_uplink`      | Data-plane uplink grant (control plane) and the agent-reported effective uplink state. |
 | `capability_report` | Agent capability declarations.                       |
 | `discovery`         | Discovered resources and target views.               |
+| `discovery_policy`  | Curated discovery aspect policy sets (version + published_at). |
 | `enrollment`        | Enrollment and credential objects.                   |
 | `execution_state`   | Execution local state objects.                       |
-| `exporter`          | Export / delivery contracts.                         |
+| `exporter`          | Export / delivery output envelope.                   |
+| `fact_summary`      | Fact content canonicalization and its idempotency digest. |
 | `gateway`           | Gateway-facing request / response objects.           |
 | `ingest`            | Telemetry ingestion contracts.                       |
+| `local_work`        | Agent-reported local work view (`state/work.json` subset). |
 | `telemetry_record`  | Normalized telemetry records.                        |
+| `work`              | Work grants (standing / one-shot), specs, and results. |
 
 Version markers are exposed as constants:
 

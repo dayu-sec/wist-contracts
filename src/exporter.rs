@@ -70,7 +70,7 @@ impl<T> ExporterOutput<T> {
         payload: T,
     ) -> Self {
         Self {
-            api_version: "wist/v1".to_string(),
+            api_version: EXPORTER_API_VERSION.to_string(),
             kind: kind.to_string(),
             output_id,
             seq,
@@ -82,3 +82,67 @@ impl<T> ExporterOutput<T> {
 }
 
 pub const EXPORTER_API_VERSION: &str = "wist/v1";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output() -> ExporterOutput<serde_json::Value> {
+        ExporterOutput::new(
+            "disc_snap",
+            "agent-1_7".to_string(),
+            7,
+            "2026-09-27T00:00:00Z".to_string(),
+            ExporterSource::new("agent-1", "inst-1"),
+            serde_json::json!({"snapshot_id": "s-1"}),
+        )
+    }
+
+    #[test]
+    fn new_stamps_the_shared_api_version_and_kind() {
+        let out = output();
+        assert_eq!(out.api_version, EXPORTER_API_VERSION);
+        assert_eq!(out.kind, "disc_snap");
+        assert_eq!(out.seq, 7);
+    }
+
+    #[test]
+    fn a_source_without_a_probe_omits_the_key_and_still_decodes() {
+        // 指标输出没有 probe：这个键不该出现（否则旧消费端会读到空探针名）。
+        let out = output();
+        let json = serde_json::to_string(&out).expect("encode");
+        assert!(!json.contains("probe"), "{json}");
+        let back: ExporterOutput<serde_json::Value> = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, out);
+    }
+
+    #[test]
+    fn a_probe_is_carried_when_set() {
+        let out = ExporterOutput::new(
+            "disc_snap",
+            "agent-1_8".to_string(),
+            8,
+            "2026-09-27T00:00:01Z".to_string(),
+            ExporterSource::new("agent-1", "inst-1").with_probe("host"),
+            serde_json::json!({}),
+        );
+        let json = serde_json::to_string(&out).expect("encode");
+        assert!(json.contains("\"probe\":\"host\""), "{json}");
+    }
+
+    #[test]
+    fn the_envelope_and_the_source_reject_unknown_fields() {
+        let json = serde_json::to_string(&output()).expect("encode");
+        let envelope_extra = json.replacen('{', "{\"extra\":1,", 1);
+        assert!(
+            serde_json::from_str::<ExporterOutput<serde_json::Value>>(&envelope_extra).is_err()
+        );
+
+        let source_extra = json.replacen(
+            "\"instance_id\":\"inst-1\"",
+            "\"instance_id\":\"inst-1\",\"extra\":1",
+            1,
+        );
+        assert!(serde_json::from_str::<ExporterOutput<serde_json::Value>>(&source_extra).is_err());
+    }
+}

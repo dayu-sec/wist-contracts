@@ -127,3 +127,96 @@ pub struct ResourceUsage {
     pub stdout_bytes: Option<u64>,
     pub stderr_bytes: Option<u64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_stamps_version_kind_and_empty_defaults() {
+        let result = ActionResult::new(
+            "act-1".to_string(),
+            "exec-1".to_string(),
+            FinalStatus::Succeeded,
+        );
+        assert_eq!(result.api_version, API_VERSION_V1);
+        assert_eq!(result.kind, ACTION_RESULT_KIND);
+        assert!(result.step_records.is_empty());
+        assert_eq!(result.outputs, ActionOutputs::default());
+        assert_eq!(result.request_id, None);
+        assert_eq!(result.resource_usage, None);
+    }
+
+    #[test]
+    fn final_status_state_names_match_the_wire_names() {
+        // `as_state_name` 与 serde 的 rename 必须一字不差：下游把前者写进状态文件，
+        // 把后者写上线，两者分叉就只能靠人看出来。
+        for (status, name) in [
+            (FinalStatus::Succeeded, "succeeded"),
+            (FinalStatus::Failed, "failed"),
+            (FinalStatus::Cancelled, "cancelled"),
+            (FinalStatus::TimedOut, "timed_out"),
+            (FinalStatus::Rejected, "rejected"),
+        ] {
+            assert_eq!(status.as_state_name(), name);
+            assert_eq!(
+                serde_json::to_string(&status).unwrap(),
+                format!("\"{name}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<FinalStatus>(&format!("\"{name}\"")).unwrap(),
+                status
+            );
+        }
+        assert!(serde_json::from_str::<FinalStatus>("\"unknown\"").is_err());
+        assert!(serde_json::from_str::<StepStatus>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn action_result_round_trips_with_nested_records_and_outputs() {
+        let mut result = ActionResult::new(
+            "act-1".to_string(),
+            "exec-1".to_string(),
+            FinalStatus::Failed,
+        );
+        result.step_records.push(StepRecord {
+            step_id: "step-1".to_string(),
+            attempt: 2,
+            op: Some("shell".to_string()),
+            status: StepStatus::Failed,
+            started_at: "2026-09-27T00:00:00Z".to_string(),
+            finished_at: Some("2026-09-27T00:00:01Z".to_string()),
+            duration_ms: Some(1_000),
+            error_code: Some("nonzero_exit".to_string()),
+            stdout_summary: None,
+            stderr_summary: Some("boom".to_string()),
+            resource_usage: Some(ResourceUsage {
+                max_rss_bytes: Some(1024),
+                cpu_time_ms: None,
+                stdout_bytes: Some(0),
+                stderr_bytes: Some(4),
+            }),
+        });
+        result.outputs.items.push(ActionOutputItem {
+            name: "file".to_string(),
+            value: serde_json::json!({"path": "/tmp/out"}),
+            redacted: Some(true),
+        });
+
+        let json = serde_json::to_string(&result).expect("encode");
+        let back: ActionResult = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, result);
+    }
+
+    #[test]
+    fn action_result_rejects_unknown_fields() {
+        let result = ActionResult::new(
+            "act-1".to_string(),
+            "exec-1".to_string(),
+            FinalStatus::Succeeded,
+        );
+        let json = serde_json::to_string(&result).expect("encode");
+        let mutated = json.replacen('{', "{\"extra\":1,", 1);
+        assert!(serde_json::from_str::<ActionResult>(&mutated).is_err());
+    }
+}

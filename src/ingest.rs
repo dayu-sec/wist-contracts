@@ -24,7 +24,7 @@ pub struct DiscoveryReport {
     pub agent_id: String,
     pub instance_id: String,
     pub snapshot_id: String,
-    pub revision: u64,
+    pub revision: i64,
     pub generated_at: String,
     pub report_attempt: u32,
     pub report_mode: DiscoveryReportMode,
@@ -78,7 +78,7 @@ pub struct DiscoveryIngestAck {
     pub agent_id: String,
     pub instance_id: String,
     pub snapshot_id: String,
-    pub revision: u64,
+    pub revision: i64,
     pub ack_status: DiscoveryIngestAckStatus,
     pub accepted_at: String,
     pub reason_code: Option<String>,
@@ -92,7 +92,7 @@ impl DiscoveryIngestAck {
         agent_id: String,
         instance_id: String,
         snapshot_id: String,
-        revision: u64,
+        revision: i64,
         ack_status: DiscoveryIngestAckStatus,
         accepted_at: String,
     ) -> Self {
@@ -535,5 +535,79 @@ mod tests {
 
         let err = IngestHead::decode(&head).expect_err("reject unknown kind");
         assert!(err.to_string().contains("unsupported ingest message kind"));
+    }
+
+    #[test]
+    fn ingest_head_round_trips_every_kind_and_compression() {
+        for message_kind in [
+            IngestMessageKind::DiscoverySnapshot,
+            IngestMessageKind::DiscoveryIngestAck,
+        ] {
+            for compression in [
+                IngestCompression::None,
+                IngestCompression::Gzip,
+                IngestCompression::Zstd,
+            ] {
+                let original = IngestHead {
+                    version: 9,
+                    message_kind,
+                    encoding: IngestEncoding::Json,
+                    compression,
+                    body_len: 999_999_999,
+                    flags: 0xFF,
+                };
+                let encoded = original.encode().expect("encode head");
+                assert_eq!(encoded.len(), INGEST_HEAD_LEN);
+                assert_eq!(IngestHead::decode(&encoded).expect("decode head"), original);
+            }
+        }
+    }
+
+    #[test]
+    fn ingest_head_encode_guards_version_and_body_len_range() {
+        // 单字符版本位：0 与 > 9 都非法。
+        let mut head = IngestHead::discovery_snapshot(1);
+        head.version = 0;
+        assert!(head.encode().is_err());
+        head.version = 10;
+        assert!(head.encode().is_err());
+
+        // 9 位长度字段：上限 999_999_999 能编，再大就超宽了。
+        assert!(IngestHead::discovery_snapshot(999_999_999).encode().is_ok());
+        assert!(
+            IngestHead::discovery_snapshot(1_000_000_000)
+                .encode()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn ingest_head_decode_rejects_bad_length_magic_and_bytes() {
+        assert!(IngestHead::decode(&[b' '; 8]).is_err());
+
+        let mut bad_magic = [b' '; INGEST_HEAD_LEN];
+        let raw = b"WIX1;V=1;K=DSNAP;E=JSON;C=NONE;L=000000001;F=00;";
+        bad_magic[..raw.len()].copy_from_slice(raw);
+        assert!(IngestHead::decode(&bad_magic).is_err());
+
+        // 非 ASCII 头（长度对也不收）。
+        assert!(IngestHead::decode(&[0xFFu8; INGEST_HEAD_LEN]).is_err());
+    }
+
+    #[test]
+    fn ingest_head_decode_rejects_malformed_body_len_and_flags() {
+        let decode_raw = |raw: &[u8]| {
+            let mut head = [b' '; INGEST_HEAD_LEN];
+            head[..raw.len()].copy_from_slice(raw);
+            IngestHead::decode(&head)
+        };
+        // 长度字段不是 9 位数字。
+        assert!(decode_raw(b"WII1;V=1;K=DSNAP;E=JSON;C=NONE;L=00000001;F=00;").is_err());
+        assert!(decode_raw(b"WII1;V=1;K=DSNAP;E=JSON;C=NONE;L=00x000001;F=00;").is_err());
+        // flags 必须恰好两位十六进制。
+        assert!(decode_raw(b"WII1;V=1;K=DSNAP;E=JSON;C=NONE;L=000000001;F=0;").is_err());
+        assert!(decode_raw(b"WII1;V=1;K=DSNAP;E=JSON;C=NONE;L=000000001;F=GG;").is_err());
+        // 缺一个字段（段数不是 8）。
+        assert!(decode_raw(b"WII1;V=1;K=DSNAP;E=JSON;C=NONE;L=000000001;").is_err());
     }
 }

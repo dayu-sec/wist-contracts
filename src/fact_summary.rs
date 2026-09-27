@@ -152,4 +152,41 @@ mod tests {
         );
         assert_eq!(before, recomputed.content_digest());
     }
+
+    #[test]
+    fn packages_and_listen_ports_are_part_of_the_digest() {
+        // 这两个字段同样进内容摘要（用途判据的输入）：任一变则重报。
+        let base = FactContent::new("linux", "x86_64", Vec::new(), Vec::new(), Vec::new())
+            .content_digest();
+        let with_package = FactContent::new(
+            "linux",
+            "x86_64",
+            Vec::new(),
+            vec!["nginx".to_string()],
+            Vec::new(),
+        )
+        .content_digest();
+        let with_port = FactContent::new(
+            "linux",
+            "x86_64",
+            Vec::new(),
+            Vec::new(),
+            vec!["443".to_string()],
+        )
+        .content_digest();
+        assert_ne!(base, with_package);
+        assert_ne!(base, with_port);
+        assert_ne!(with_package, with_port);
+    }
+
+    #[test]
+    fn an_empty_content_digest_is_stable_and_well_formed() {
+        let digest = FactContent::new("", "", Vec::new(), Vec::new(), Vec::new()).content_digest();
+        assert!(digest.starts_with("fact-v1:sha256:"));
+        assert_eq!(digest.len(), "fact-v1:sha256:".len() + 64);
+        assert_eq!(
+            digest,
+            FactContent::new("", "", Vec::new(), Vec::new(), Vec::new()).content_digest()
+        );
+    }
 }
