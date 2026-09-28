@@ -117,6 +117,31 @@ pub struct AgentCertificateStatus {
     pub remaining_seconds: i64,
     /// `valid` / `renew_due` / `expired`。
     pub state: String,
+    /// agent 本机**最近一次续签判定**的结果（§5.5）；老版本 agentd 不发 → `None`。
+    #[serde(default)]
+    pub last_renewal: Option<AgentCredentialRenewal>,
+}
+
+/// agent 本机**最近一次续签判定**的结果（§5.5）。
+///
+/// 续签是后台动作，**不记录就等于静默**：agentd 把本地台账（`identity/renewal.json`）原样带上来，
+/// 网关只存 / 展示，不重算。与 [`AgentCertificateStatus`] 同口径：`None` = 还没报过。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(
+    kind = "struct",
+    domain = "Control",
+    module = "Control.Agent.Certificate"
+)]
+#[serde(deny_unknown_fields)]
+pub struct AgentCredentialRenewal {
+    /// `not_due` / `renewed` / `failed` / `needs_reinstall` / `revoked`（与 agentd 本地台账同口径）。
+    pub outcome: String,
+    /// 本次判定时刻（RFC3339）。
+    pub checked_at: String,
+    /// 人读细节（失败原因 / 续到了什么时候…）；无内容时为空串。
+    pub detail: String,
+    /// 续签后证书的到期时刻（RFC3339）；无证书时为空串。
+    pub not_after: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
