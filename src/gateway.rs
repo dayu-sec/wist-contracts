@@ -91,6 +91,32 @@ pub struct AgentStatusReport {
     /// （与 `local_work` 同口径）。
     #[serde(default)]
     pub uplink_state: Option<crate::agent_uplink::AgentUplinkState>,
+    /// 本机**客户端证书**状态（mTLS）；还没有证书时 `None`。
+    ///
+    /// 为什么要 agent 上报：证书与到期时间只有本机知道（服务端在握手期就验完了，
+    /// 而**过期证书根本进不来**）；而「哪些机器快到期 / 已过期需重装」正是运维要提前看到的
+    /// （见 `docs/design/agent-identity-mtls.md` §5.5）。
+    ///
+    /// `None` = 这台 agent 还没报过 / 没证书 —— 落库后保持上一次的值（与其他可选字段同口径）。
+    #[serde(default)]
+    pub certificate_status: Option<AgentCertificateStatus>,
+}
+
+/// agent 本地客户端证书状态（上报给网关，供页面/告警展示）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(
+    kind = "struct",
+    domain = "Control",
+    module = "Control.Agent.Certificate"
+)]
+#[serde(deny_unknown_fields)]
+pub struct AgentCertificateStatus {
+    /// 证书到期时刻（RFC3339）。
+    pub not_after: String,
+    /// 距到期的剩余秒数（已过期为负）。
+    pub remaining_seconds: i64,
+    /// `valid` / `renew_due` / `expired`。
+    pub state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
