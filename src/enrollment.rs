@@ -142,6 +142,10 @@ pub struct CredentialRenewal {
     pub agent_id: String,
     pub instance_id: String,
     pub credential_request: String,
+    /// 续期时重新提交的 **CSR**（PEM）；`None` = 只要 bearer（旧 agentd / 双轨）。
+    ///
+    /// 与注册同一口径：私钥不上送、主体由网关填（见 `docs/design/agent-identity-mtls.md` §4.2）。
+    pub certificate_signing_request: Option<String>,
     pub requested_at: String,
 }
 
@@ -150,6 +154,7 @@ impl CredentialRenewal {
         agent_id: String,
         instance_id: String,
         credential_request: String,
+        certificate_signing_request: Option<String>,
         requested_at: String,
     ) -> Self {
         Self {
@@ -158,6 +163,7 @@ impl CredentialRenewal {
             agent_id,
             instance_id,
             credential_request,
+            certificate_signing_request,
             requested_at,
         }
     }
@@ -223,16 +229,27 @@ mod tests {
         let request = CredentialRenewal::new(
             "agent-a".to_string(),
             "instance-a".to_string(),
-            "bearer".to_string(),
+            "csr".to_string(),
+            Some("-----BEGIN CERTIFICATE REQUEST-----\nA\n".to_string()),
             "2026-07-29T00:00:00Z".to_string(),
         );
         let encoded = serde_json::to_string(&request).expect("encode");
 
         assert!(encoded.contains(&format!("\"kind\":\"{RENEW_AGENT_CREDENTIAL_KIND}\"")));
+        assert!(encoded.contains("certificate_signing_request"));
 
         let decoded: CredentialRenewal = serde_json::from_str(&encoded).expect("decode");
         assert_eq!(decoded.api_version, "v1");
         assert_eq!(decoded.kind, RENEW_AGENT_CREDENTIAL_KIND);
+
+        // 不带 CSR 的旧报文（缺该字段）照样能解 —— 双轨期向后兼容。
+        let mut legacy = serde_json::to_value(&request).expect("encode");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("certificate_signing_request");
+        let decoded: CredentialRenewal = serde_json::from_value(legacy).expect("decode legacy");
+        assert!(decoded.certificate_signing_request.is_none());
     }
 
     #[test]
