@@ -14,6 +14,12 @@ pub struct EnrollmentRequest {
     pub kind: String,
     pub token: String,
     pub credential_request: String,
+    /// agent 本地生成的 **CSR**（PEM）。`None` = 本次不申请客户端证书（旧 agentd / 只走 bearer 的
+    /// 双轨期）。
+    ///
+    /// 私钥**永不上送**，只交公钥；且**主体由网关填** —— CSR 里声明的 subject/SAN 一律忽略，
+    /// 网关按稳定哈希 `agent_id` 生成 URI SAN（见 `docs/design/agent-identity-mtls.md` §4.2）。
+    pub certificate_signing_request: Option<String>,
     pub host_profile: HostProfile,
     pub capability_summary: String,
     pub requested_at: String,
@@ -23,6 +29,7 @@ impl EnrollmentRequest {
     pub fn new(
         token: String,
         credential_request: String,
+        certificate_signing_request: Option<String>,
         host_profile: HostProfile,
         capability_summary: String,
         requested_at: String,
@@ -32,6 +39,7 @@ impl EnrollmentRequest {
             kind: SUBMIT_ENROLLMENT_REQUEST_KIND.to_string(),
             token,
             credential_request,
+            certificate_signing_request,
             host_profile,
             capability_summary,
             requested_at,
@@ -183,8 +191,8 @@ pub struct PolicyBinding {
 #[cfg(test)]
 mod tests {
     use super::{
-        CredentialRenewal, EnrollmentEnvelope, EnrollmentOutcome, EnrollmentStatus, HostProfile,
-        RENEW_AGENT_CREDENTIAL_KIND,
+        CredentialRenewal, EnrollmentEnvelope, EnrollmentOutcome, EnrollmentRequest,
+        EnrollmentStatus, HostProfile, RENEW_AGENT_CREDENTIAL_KIND,
     };
 
     #[test]
@@ -240,6 +248,57 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<EnrollmentStatus>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn enrollment_request_carries_an_optional_csr() {
+        let profile = sample_host_profile();
+        let with_csr = EnrollmentRequest::new(
+            "token-a".to_string(),
+            "none".to_string(),
+            Some(
+                "-----BEGIN CERTIFICATE REQUEST-----\nA\n-----END CERTIFICATE REQUEST-----\n"
+                    .to_string(),
+            ),
+            profile.clone(),
+            "wist-agentd:test".to_string(),
+            "2026-09-28T00:00:00Z".to_string(),
+        );
+        let json = serde_json::to_string(&with_csr).expect("encode");
+        assert!(json.contains("certificate_signing_request"));
+        let back: EnrollmentRequest = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, with_csr);
+
+        // 不带 CSR 的旧报文（缺该字段）照样能解 —— 双轨期向后兼容。
+        let legacy = EnrollmentRequest::new(
+            "token-a".to_string(),
+            "none".to_string(),
+            None,
+            profile,
+            "wist-agentd:test".to_string(),
+            "2026-09-28T00:00:00Z".to_string(),
+        );
+        let mut legacy_json = serde_json::to_value(&legacy).expect("encode legacy");
+        legacy_json
+            .as_object_mut()
+            .expect("object")
+            .remove("certificate_signing_request");
+        let decoded: EnrollmentRequest =
+            serde_json::from_value(legacy_json).expect("decode legacy");
+        assert!(decoded.certificate_signing_request.is_none());
+    }
+
+    fn sample_host_profile() -> HostProfile {
+        HostProfile {
+            node_id: "node-1".to_string(),
+            hostname: "host-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            machine_id: "mid-1".to_string(),
+            cloud_instance_id: None,
+            k8s_node_uid: None,
+            ip_addresses: vec!["10.0.0.1".to_string()],
+        }
     }
 
     #[test]
