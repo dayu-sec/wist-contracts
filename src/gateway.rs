@@ -117,7 +117,10 @@ pub struct AgentCertificateStatus {
     pub remaining_seconds: i64,
     /// `valid` / `renew_due` / `expired`。
     pub state: String,
-    /// agent 本机**最近一次续签判定**的结果（§5.5）；老版本 agentd 不发 → `None`。
+    /// agent 本机**最近一次续签判定**的结果（§5.5）。
+    ///
+    /// `None` = 老版本 agentd 不发（或本机台账一时读不到）—— 网关落库时**保留上一次的值**
+    /// （与本报告里 `local_work` / `uplink_state` 同一口径）。
     #[serde(default)]
     pub last_renewal: Option<AgentCredentialRenewal>,
 }
@@ -785,6 +788,7 @@ mod tests {
         assert_eq!(report.discovery_policy_version, None);
         assert!(report.local_work.is_none());
         assert!(report.uplink_state.is_none());
+        assert!(report.certificate_status.is_none());
 
         assert!(
             serde_json::from_str::<AgentStatusReport>(
@@ -792,6 +796,35 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// 证书状态里的「最近一次续签」是可选的，且拒绝未知字段：
+    /// 旧 agentd 少发它必须仍能解码（上线顺序不一，网关不能因此 400）。
+    #[test]
+    fn certificate_status_last_renewal_is_optional_and_round_trips() {
+        let legacy =
+            r#"{"not_after":"2026-11-04T00:00:00Z","remaining_seconds":100,"state":"valid"}"#;
+        let status: AgentCertificateStatus = serde_json::from_str(legacy).expect("decode");
+        assert!(status.last_renewal.is_none());
+
+        let json = r#"{"not_after":"2026-11-04T00:00:00Z","remaining_seconds":100,"state":"valid",
+            "last_renewal":{"outcome":"renewed","checked_at":"2026-10-08T00:00:00Z",
+            "detail":"credential renewed","not_after":"2026-11-04T00:00:00Z"}}"#;
+        let status: AgentCertificateStatus = serde_json::from_str(json).expect("decode");
+        assert_eq!(
+            status.last_renewal.as_ref().expect("renewal").outcome,
+            "renewed"
+        );
+
+        let encoded = serde_json::to_string(&status).expect("encode");
+        let back: AgentCertificateStatus = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(back, status);
+
+        // 字段漂移（`last_renewal` 里多出未知键）必须显形。
+        let drifted = r#"{"not_after":"x","remaining_seconds":0,"state":"valid",
+            "last_renewal":{"outcome":"renewed","checked_at":"t","detail":"","not_after":"",
+            "extra":1}}"#;
+        assert!(serde_json::from_str::<AgentCertificateStatus>(drifted).is_err());
     }
 
     #[test]
