@@ -102,8 +102,6 @@ pub struct ControlPlaneSection {
     #[serde(default)]
     pub credential_id: Option<String>,
     #[serde(default)]
-    pub bearer_token: Option<String>,
-    #[serde(default)]
     pub credential_expires_at: Option<String>,
     #[serde(default)]
     pub tls_mode: Option<String>,

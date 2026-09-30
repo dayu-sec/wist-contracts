@@ -14,12 +14,12 @@ pub struct EnrollmentRequest {
     pub kind: String,
     pub token: String,
     pub credential_request: String,
-    /// agent 本地生成的 **CSR**（PEM）。`None` = 本次不申请客户端证书（旧 agentd / 只走 bearer 的
-    /// 双轨期）。
+    /// agent 本地生成的 **CSR**（PEM）。mTLS 是唯一凭据路径，注册**必须**带 CSR ——
+    /// 网关据此签一张客户端证书；没有它就没有凭据可用（不再回落 bearer）。
     ///
     /// 私钥**永不上送**，只交公钥；且**主体由网关填** —— CSR 里声明的 subject/SAN 一律忽略，
     /// 网关按稳定哈希 `agent_id` 生成 URI SAN（见 `docs/design/agent-identity-mtls.md` §4.2）。
-    pub certificate_signing_request: Option<String>,
+    pub certificate_signing_request: String,
     pub host_profile: HostProfile,
     pub capability_summary: String,
     pub requested_at: String,
@@ -29,7 +29,7 @@ impl EnrollmentRequest {
     pub fn new(
         token: String,
         credential_request: String,
-        certificate_signing_request: Option<String>,
+        certificate_signing_request: String,
         host_profile: HostProfile,
         capability_summary: String,
         requested_at: String,
@@ -124,9 +124,9 @@ pub struct CredentialBundle {
     pub credential_id: String,
     pub agent_id: String,
     pub instance_id: String,
-    pub auth_scheme: Option<String>,
-    pub bearer_token: Option<String>,
-    pub certificate: Option<String>,
+    /// 客户端证书（PEM）。mTLS 是 agent 与网关之间的**唯一**凭据路径（bearer 已删），
+    /// 所以这里是必填：注册/续期都必须换回一张证书。
+    pub certificate: String,
     pub private_key_ref: Option<String>,
     pub ca_bundle: Option<String>,
     pub issued_at: String,
@@ -142,10 +142,9 @@ pub struct CredentialRenewal {
     pub agent_id: String,
     pub instance_id: String,
     pub credential_request: String,
-    /// 续期时重新提交的 **CSR**（PEM）；`None` = 只要 bearer（旧 agentd / 双轨）。
-    ///
-    /// 与注册同一口径：私钥不上送、主体由网关填（见 `docs/design/agent-identity-mtls.md` §4.2）。
-    pub certificate_signing_request: Option<String>,
+    /// 续期时提交的 **CSR**（PEM）。与注册同口径：私钥不上送、主体由网关填
+    /// （见 `docs/design/agent-identity-mtls.md` §4.2）。mTLS 是唯一凭据路径，续期**必须**带它。
+    pub certificate_signing_request: String,
     pub requested_at: String,
 }
 
@@ -154,7 +153,7 @@ impl CredentialRenewal {
         agent_id: String,
         instance_id: String,
         credential_request: String,
-        certificate_signing_request: Option<String>,
+        certificate_signing_request: String,
         requested_at: String,
     ) -> Self {
         Self {
@@ -197,9 +196,42 @@ pub struct PolicyBinding {
 #[cfg(test)]
 mod tests {
     use super::{
-        CredentialRenewal, EnrollmentEnvelope, EnrollmentOutcome, EnrollmentRequest,
-        EnrollmentStatus, HostProfile, RENEW_AGENT_CREDENTIAL_KIND,
+        CredentialBundle, CredentialRenewal, EnrollmentEnvelope, EnrollmentOutcome,
+        EnrollmentRequest, EnrollmentStatus, HostProfile, RENEW_AGENT_CREDENTIAL_KIND,
     };
+
+    /// 契约收口（2026-09-30）：agent 的凭据包**只剩客户端证书** —— 线上不再有 `bearer_token` /
+    /// `auth_scheme`，而 `certificate` 是必填。带旧字段的老报文一律拒（`deny_unknown_fields`）。
+    #[test]
+    fn credential_bundle_carries_only_the_client_certificate() {
+        let bundle = CredentialBundle {
+            credential_id: "cred-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            instance_id: "inst-1".to_string(),
+            certificate: "CERT".to_string(),
+            private_key_ref: None,
+            ca_bundle: None,
+            issued_at: "2026-09-30T00:00:00Z".to_string(),
+            not_before: None,
+            not_after: None,
+        };
+        let json = serde_json::to_string(&bundle).expect("encode");
+        assert!(!json.contains("bearer_token"), "{json}");
+        assert!(!json.contains("auth_scheme"), "{json}");
+
+        // 带旧字段的老报文解不了（字段已从契约里删掉）。
+        let legacy = r#"{"credential_id":"c","agent_id":"a","instance_id":"i",\
+            "auth_scheme":"bearer","bearer_token":"wic_x","certificate":"CERT",\
+            "private_key_ref":null,"ca_bundle":null,"issued_at":"t",\
+            "not_before":null,"not_after":null}"#;
+        assert!(serde_json::from_str::<CredentialBundle>(legacy).is_err());
+
+        // certificate 必填：缺了就解不了（mTLS 是唯一凭据路径，没有它就没有凭据）。
+        let no_certificate = r#"{"credential_id":"c","agent_id":"a","instance_id":"i",\
+            "private_key_ref":null,"ca_bundle":null,"issued_at":"t",\
+            "not_before":null,"not_after":null}"#;
+        assert!(serde_json::from_str::<CredentialBundle>(no_certificate).is_err());
+    }
 
     #[test]
     fn enrollment_result_status_uses_wire_names() {
@@ -230,7 +262,7 @@ mod tests {
             "agent-a".to_string(),
             "instance-a".to_string(),
             "csr".to_string(),
-            Some("-----BEGIN CERTIFICATE REQUEST-----\nA\n".to_string()),
+            "-----BEGIN CERTIFICATE REQUEST-----\nA\n".to_string(),
             "2026-07-29T00:00:00Z".to_string(),
         );
         let encoded = serde_json::to_string(&request).expect("encode");
@@ -242,14 +274,13 @@ mod tests {
         assert_eq!(decoded.api_version, "v1");
         assert_eq!(decoded.kind, RENEW_AGENT_CREDENTIAL_KIND);
 
-        // 不带 CSR 的旧报文（缺该字段）照样能解 —— 双轨期向后兼容。
-        let mut legacy = serde_json::to_value(&request).expect("encode");
-        legacy
+        // CSR 是必填：缺该字段的报文解不了（不再有「只要 bearer」的双轨报文）。
+        let mut without_csr = serde_json::to_value(&request).expect("encode");
+        without_csr
             .as_object_mut()
             .expect("object")
             .remove("certificate_signing_request");
-        let decoded: CredentialRenewal = serde_json::from_value(legacy).expect("decode legacy");
-        assert!(decoded.certificate_signing_request.is_none());
+        assert!(serde_json::from_value::<CredentialRenewal>(without_csr).is_err());
     }
 
     #[test]
@@ -268,41 +299,29 @@ mod tests {
     }
 
     #[test]
-    fn enrollment_request_carries_an_optional_csr() {
+    fn enrollment_request_carries_a_required_csr() {
         let profile = sample_host_profile();
-        let with_csr = EnrollmentRequest::new(
+        let request = EnrollmentRequest::new(
             "token-a".to_string(),
-            "none".to_string(),
-            Some(
-                "-----BEGIN CERTIFICATE REQUEST-----\nA\n-----END CERTIFICATE REQUEST-----\n"
-                    .to_string(),
-            ),
-            profile.clone(),
-            "wist-agentd:test".to_string(),
-            "2026-09-28T00:00:00Z".to_string(),
-        );
-        let json = serde_json::to_string(&with_csr).expect("encode");
-        assert!(json.contains("certificate_signing_request"));
-        let back: EnrollmentRequest = serde_json::from_str(&json).expect("decode");
-        assert_eq!(back, with_csr);
-
-        // 不带 CSR 的旧报文（缺该字段）照样能解 —— 双轨期向后兼容。
-        let legacy = EnrollmentRequest::new(
-            "token-a".to_string(),
-            "none".to_string(),
-            None,
+            "csr".to_string(),
+            "-----BEGIN CERTIFICATE REQUEST-----\nA\n-----END CERTIFICATE REQUEST-----\n"
+                .to_string(),
             profile,
             "wist-agentd:test".to_string(),
             "2026-09-28T00:00:00Z".to_string(),
         );
-        let mut legacy_json = serde_json::to_value(&legacy).expect("encode legacy");
-        legacy_json
+        let json = serde_json::to_string(&request).expect("encode");
+        assert!(json.contains("certificate_signing_request"));
+        let back: EnrollmentRequest = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, request);
+
+        // CSR 必填：缺该字段的报文解不了（注册不再有「不带证书」的退路）。
+        let mut without_csr = serde_json::to_value(&request).expect("encode");
+        without_csr
             .as_object_mut()
             .expect("object")
             .remove("certificate_signing_request");
-        let decoded: EnrollmentRequest =
-            serde_json::from_value(legacy_json).expect("decode legacy");
-        assert!(decoded.certificate_signing_request.is_none());
+        assert!(serde_json::from_value::<EnrollmentRequest>(without_csr).is_err());
     }
 
     fn sample_host_profile() -> HostProfile {

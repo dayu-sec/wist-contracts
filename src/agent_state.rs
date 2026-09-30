@@ -14,8 +14,6 @@ pub struct AgentRuntimeState {
     #[serde(default)]
     pub credential_id: Option<String>,
     #[serde(default)]
-    pub bearer_token: Option<String>,
-    #[serde(default)]
     pub credential_expires_at: Option<String>,
     pub mode: RuntimeMode,
     pub updated_at: String,
@@ -35,7 +33,6 @@ impl AgentRuntimeState {
             instance_id,
             version,
             credential_id: None,
-            bearer_token: None,
             credential_expires_at: None,
             mode,
             updated_at,
@@ -74,7 +71,6 @@ mod tests {
         let state = state();
         assert_eq!(state.schema_version, SCHEMA_VERSION_V1);
         assert_eq!(state.credential_id, None);
-        assert_eq!(state.bearer_token, None);
         assert_eq!(state.credential_expires_at, None);
     }
 
@@ -99,7 +95,6 @@ mod tests {
     fn state_round_trips_with_credentials_and_rejects_unknown_fields() {
         let mut state = state();
         state.credential_id = Some("cred-1".to_string());
-        state.bearer_token = Some("wic_x".to_string());
         state.credential_expires_at = Some("2026-10-01T00:00:00Z".to_string());
 
         let json = serde_json::to_string(&state).expect("encode");
