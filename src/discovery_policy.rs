@@ -6,7 +6,7 @@
 //! 不该在每台机器的二进制里各写一份。写死的代价已经在代码里显形过：
 //! 探针的 `refresh_interval()` 里注释着「值取自模型 DiscoveryAspectPolicy.default_interval_seconds」，
 //! 而那份模型值**没有任何通路进代码** —— 于是模型与代码成了两份可以静默漂移的抄本。
-//! 现在：值放 `jumo/model/content/aspect-policies.toml`（与用途规则表同样的策展数据），
+//! 现在：值放 `wist-knowledge/aspect-policies.toml`（与用途规则表同样的策展数据），
 //! 网关装载并校验后下发，agentd 的应用逻辑只认这一份。
 //!
 //! ## 为什么在契约 crate
