@@ -391,11 +391,12 @@ impl WorkSpec {
     }
 }
 
-/// agentd **能真的执行**的来源 kind（其余 kind 会被如实报成 `unsupported`，不当没看见）。
+/// agentd **有可能真的执行**的来源 kind（其余 kind 一律 `unsupported`，不当没看见）。
 ///
-/// 注意：kind 对了**还不够** —— 目标形态也有限制，见 [`is_executable_source`]。
-/// 只按 kind 判会把「通配目标」当成可采，而那在采集端落不了地。
-pub const EXECUTABLE_SOURCE_KINDS: &[&str] = &["FileGlob", "MetricInterval"];
+/// 注意：kind 对了**还不够** —— 目标形态也有限制，见 [`is_executable_source`]：
+/// `FileGlob` 要是显式绝对路径、`Exporter` 要是**已知导出器 ID**。只按 kind 判会把
+/// 「通配目标」「写错的导出器」当成可采，而那在采集端落不了地。
+pub const EXECUTABLE_SOURCE_KINDS: &[&str] = &["FileGlob", "MetricInterval", "Exporter"];
 
 /// 目标里有没有通配元字符 —— 有就说明它不是**显式单路径**。
 pub fn has_glob_meta(target: &str) -> bool {
@@ -411,6 +412,48 @@ pub fn is_explicit_path(target: &str) -> bool {
     target.starts_with('/') && !has_glob_meta(target)
 }
 
+/// 定时导出器（`Exporter`）的**已知 ID**：协议层词表，网关 / agentd / web 三侧共用。
+///
+/// 为什么词表放这里：`is_executable_source` 要判「这条 `Exporter` 目标今天真能不能采」，
+/// 而网关的采集就绪度与 agentd 的「接不接得了」必须是**同一个判据**（见 [`is_executable_source`]）。
+/// 词表只收**已实现**的导出器 —— 收录一个 ID 就等于承诺 agentd 能跑它；未知 ID（旧网关发新 ID、
+/// 或写错）一律当不可采，不要「写了就算」。新增能力 = 四侧（本 crate + 网关 + agentd + web）
+/// 一起改 + 知识库把对应单元开 `active`。
+pub const EXPORTER_IDS: &[&str] = &[
+    "journalctl-unit",
+    "journalctl-shutdown",
+    "last-reboot",
+    "nft-ruleset",
+    "iptables-save",
+    "smartctl",
+    "dmesg",
+    "auditd-execve",
+];
+
+/// 把一个 `Exporter` 目标拆成 `(id, arg)`：`"dmesg:panic"` → `("dmesg", Some("panic"))`。
+///
+/// 无 `:` 时 `arg` 为 `None`；空 id 或含空白的 id 视为无效（返回 `None`）。`arg` 是**声明式的窄选项**
+/// （如 `dmesg` 的过滤键），不是命令行片段 —— 实现侧各自解释，绝不拼进 shell。
+pub fn parse_exporter_target(target: &str) -> Option<(&str, Option<&str>)> {
+    let (id, arg) = match target.split_once(':') {
+        Some((id, arg)) => (id, Some(arg)),
+        None => (target, None),
+    };
+    let id = id.trim();
+    if id.is_empty() || id.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((id, arg))
+}
+
+/// 这条 `Exporter` 目标的 ID 是不是**已知且已实现**的导出器。
+pub fn is_known_exporter(target: &str) -> bool {
+    match parse_exporter_target(target) {
+        Some((id, _)) => EXPORTER_IDS.contains(&id),
+        None => false,
+    }
+}
+
 /// 一条来源今天**能不能被采**：`kind` 要 agentd 能执行，`target` 还要是显式路径。
 ///
 /// 为什么把两件事放在一个函数里：网关的采集就绪度（「这个面能不能派下去」）与 agentd 的
@@ -422,6 +465,8 @@ pub fn is_executable_source(kind: &str, target: &str) -> bool {
         "FileGlob" => is_explicit_path(target),
         // 指标：`target` 是采集周期（如 `15s`、`60s`），不是路径。
         "MetricInterval" => true,
+        // 定时导出器：`target` 要是**已知导出器 ID**（可带 `:arg`）。未知 ID 不可执行。
+        "Exporter" => is_known_exporter(target),
         _ => false,
     }
 }
@@ -569,9 +614,27 @@ mod tests {
         // 文件：kind 对了，目标还得是显式路径 —— 否则网关会把采不到的面报成“可采”。
         assert!(is_executable_source("FileGlob", "/var/log/app.log"));
         assert!(!is_executable_source("FileGlob", "/var/log/app*"));
-        // 还没实现的 kind：一律不可执行。
+        // 导出器：kind 对了，ID 还得是**已知的**（`last,lastb` 是 macOS 侧、尚未实现）。
+        assert!(is_executable_source("Exporter", "smartctl"));
+        assert!(is_executable_source("Exporter", "dmesg:panic"));
         assert!(!is_executable_source("Exporter", "last,lastb"));
+        // 还没实现的 kind：一律不可执行。
         assert!(!is_executable_source("UnifiedLogPredicate", "syspolicyd"));
+    }
+
+    #[test]
+    fn exporter_targets_split_into_a_known_id_and_an_optional_arg() {
+        assert_eq!(parse_exporter_target("smartctl"), Some(("smartctl", None)));
+        assert_eq!(
+            parse_exporter_target("dmesg:panic"),
+            Some(("dmesg", Some("panic")))
+        );
+        // 空 id / 含空白的 id 不是合法 ID。
+        assert_eq!(parse_exporter_target(":panic"), None);
+        assert_eq!(parse_exporter_target(" dm esg"), None);
+        // 判定只看冒号前的 ID，`arg` 不参与。
+        assert!(is_known_exporter("dmesg:nvidia-xid"));
+        assert!(!is_known_exporter("nope"));
     }
 
     #[test]
