@@ -6,6 +6,7 @@ use crate::API_VERSION_V1;
 use crate::action_plan::ActionPlan;
 use crate::action_result::{ActionResult, FinalStatus};
 use crate::discovery_policy::{DiscoveryAspectPolicy, DiscoveryAspectPolicySet};
+use crate::enrollment::HostProfile;
 
 pub const DISPATCH_ACTION_PLAN_KIND: &str = "dispatch_action_plan";
 pub const ACTION_PLAN_ACK_KIND: &str = "action_plan_ack";
@@ -100,6 +101,15 @@ pub struct AgentStatusReport {
     /// `None` = 这台 agent 还没报过 / 没证书 —— 落库后保持上一次的值（与其他可选字段同口径）。
     #[serde(default)]
     pub certificate_status: Option<AgentCertificateStatus>,
+    /// 机器画像（机器名 / `node_id` / `machine_id` / 网卡地址）—— 注册表里「这是哪台机器」的展示来源。
+    ///
+    /// 为什么由状态上报带（而不是只靠注册）：**凭证书首触重建**登记时，机器画像全是空的
+    /// （证书只承载稳定身份），原设计指望「后续状态上报补齐」，但那条通道以前没有这些字段 ——
+    /// 于是经证书注册的机器在管理面永远只剩一个 ID。这里把注册时的 `HostProfile` 原样带上。
+    ///
+    /// `None` = 老版本 agentd 没带 —— 落库后保持上一次的值（与 `local_work` / `uplink_state` 同口径）。
+    #[serde(default)]
+    pub machine_profile: Option<HostProfile>,
 }
 
 /// agent 本地客户端证书状态（上报给网关，供页面/告警展示）。
@@ -789,12 +799,36 @@ mod tests {
         assert!(report.local_work.is_none());
         assert!(report.uplink_state.is_none());
         assert!(report.certificate_status.is_none());
+        // 机器画像同样是可选的：旧版 agent 不带 -> None（网关落库时保持上一次的值）。
+        assert!(report.machine_profile.is_none());
 
         assert!(
             serde_json::from_str::<AgentStatusReport>(
                 r#"{"agent_id":"a","instance_id":"i","version":"v","nope":1}"#
             )
             .is_err()
+        );
+    }
+
+    /// 机器画像随状态上报带上时能如实解码（机器名 / node_id / 网卡地址）。
+    #[test]
+    fn an_agent_status_report_carries_the_machine_profile() {
+        let json = r#"{
+            "agent_id":"a","instance_id":"i","version":"0.1.24",
+            "machine_profile":{
+                "node_id":"node-1","hostname":"host-1","os":"linux","arch":"x86_64",
+                "machine_id":"mid-1","cloud_instance_id":null,"k8s_node_uid":null,
+                "ip_addresses":["en0 192.168.1.5/24","10.8.0.2"]
+            }
+        }"#;
+        let report: AgentStatusReport = serde_json::from_str(json).expect("decode");
+        let profile = report.machine_profile.expect("machine_profile present");
+        assert_eq!(profile.hostname, "host-1");
+        assert_eq!(profile.node_id, "node-1");
+        assert_eq!(profile.machine_id, "mid-1");
+        assert_eq!(
+            profile.ip_addresses,
+            vec!["en0 192.168.1.5/24".to_string(), "10.8.0.2".to_string()]
         );
     }
 

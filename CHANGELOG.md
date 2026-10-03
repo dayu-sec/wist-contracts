@@ -3,6 +3,13 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.14] - 2026-10-03
+
+### 新增
+
+- **Agent 状态上报新增可选字段 `machine_profile`**（机器名 / `node_id` / `machine_id` / 网卡地址）：
+  管理面据此在注册表里显示「这是哪台机器」。旧 agent 不带该字段仍可解码。
+
 ## [0.1.13] - 2026-10-03
 
 ### 新增
