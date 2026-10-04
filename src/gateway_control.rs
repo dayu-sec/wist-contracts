@@ -85,6 +85,21 @@ pub struct GatewayCredentialBundle {
     pub not_after: Option<String>,
 }
 
+/// 网关凭据校验结果：以客户端证书校验通过后的记录（`certificate_serial` 为被验证书的序列号）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(
+    kind = "struct",
+    domain = "Control",
+    module = "Control.Gateway.Security"
+)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayCredentialVerificationResult {
+    pub gateway_id: String,
+    pub certificate_serial: String,
+    pub status: String,
+    pub verified_at: String,
+}
+
 /// 网关注册回执。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,7 +147,8 @@ pub struct VerifyGatewayCredential {
 mod tests {
     use super::{
         GatewayClientCertificate, GatewayClientCertificateStatus, GatewayCredentialBundle,
-        RegisterGateway, RenewGatewayCredential, VerifyGatewayCredential,
+        GatewayCredentialVerificationResult, RegisterGateway, RenewGatewayCredential,
+        VerifyGatewayCredential,
     };
 
     fn bundle() -> GatewayCredentialBundle {
@@ -212,6 +228,16 @@ mod tests {
                 .expect("encode")
                 .contains("certificate_serial")
         );
+
+        let result = GatewayCredentialVerificationResult {
+            gateway_id: "gw-1".to_string(),
+            certificate_serial: "01".to_string(),
+            status: "valid".to_string(),
+            verified_at: "2026-10-04T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&result).expect("encode");
+        assert!(json.contains("certificate_serial"));
+        assert!(!json.contains("credential_id"), "{json}");
     }
 
     #[test]
