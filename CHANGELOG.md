@@ -3,6 +3,24 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-10-04
+
+### 变更（不兼容）
+
+- **网关 ↔ 中心注册/凭据契约改为客户端证书（mTLS）**：
+  - `GatewayCredentialBundle` 去掉 `auth_scheme` / `bearer_token` / `expires_at`，
+    改为只能携带**客户端证书**：新增必填 `certificate`，以及可选 `ca_bundle` / `not_before` / `not_after`；
+    `instance_id` 变为可选。
+  - `RegisterGateway`：`csr_pem` → `certificate_signing_request`（**必填**）——mTLS 是唯一凭据路径。
+  - `RenewGatewayCredential`：改为**证书轮换**（`current_certificate_serial` + `certificate_signing_request`）。
+  - `VerifyGatewayCredential`：改为 `certificate_serial`。
+
+### 新增
+
+- **`GatewayClientCertificate` / `GatewayClientCertificateStatus`**：中心用 CA-G 签发的
+  「每网关一张」客户端证书实体（绑定 `gateway_id`、可轮换、可单点吊销）。
+- **`GatewayCredentialVerificationResult`**：以 `certificate_serial` 取代 `credential_id`。
+
 ## [0.1.14] - 2026-10-03
 
 ### 新增
