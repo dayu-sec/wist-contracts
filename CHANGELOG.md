@@ -3,6 +3,20 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.7.0] - 2026-10-06
+
+### 变更（不兼容）
+
+- **`gateway_control` 模块删除**：网关面「注册 / 凭据」报文体本就属于 Control 域
+  （模型 `Control.Gateway.{Security,Supervision}`），因 `jumo-code generate` 当时对该模块 Blocked 才手写在本 crate。
+  现按模型生成到 **`wist-control`**，请改用：
+  `RegisterGateway` / `RenewGatewayCredential` / `VerifyGatewayCredential` / `GatewayEnrollmentResult` /
+  `GatewayCredentialBundle` / `GatewayClientCertificate(+Status)` / `GatewayCredentialVerificationResult`
+  （**`wist_control`**）。
+  - **线上 JSON 不变**，但两处字段口径变化：`requested_at` / `issued_at` / `not_before` / `not_after`
+    由 `String` 改为 `wist_control::DateTime`（同为 RFC3339 串），且生成类型**默认容忍未知字段**（不再 `deny_unknown_fields`）。
+  - 消费方 `wist-center` / `wist-gwlinkd` 已同步切到 `wist-control`，且不再依赖本 crate。
+
 ## [0.6.0] - 2026-10-05
 
 ### 变更（不兼容）
