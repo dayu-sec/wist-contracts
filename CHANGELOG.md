@@ -3,6 +3,15 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-10-05
+
+### 变更（不兼容）
+
+- **`gateway` 模块里的 agent 面 seam 报文移出到 `wist-api`**：`AgentStatusReport`、`AgentStatusAck`、
+  `AgentWorkState`、`AgentWorkStateChange`、`AgentCertificateStatus`、`AgentCredentialRenewal`
+  请改用 **`wist-api::agent_status`**（线上 JSON 不变，纯位置迁移）。`wist_contracts::gateway`
+  继续保留 action-plan / action-results / facts / discovery-policies 等其余报文。
+
 ## [0.3.0] - 2026-10-05
 
 ### 变更（不兼容）
