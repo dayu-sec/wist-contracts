@@ -3,6 +3,14 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-10-05
+
+### 变更（不兼容）
+
+- **`gateway` 模块整体移出到 `wist-api`**：agent 面其余 seam 报文
+  （action-plan / action-results / facts / discovery-policies）改用 **`wist-api::gateway`**
+  （线上 JSON 不变，纯位置迁移）。`wist-contracts` 不再提供 `gateway` 模块。
+
 ## [0.4.0] - 2026-10-05
 
 ### 变更（不兼容）
