@@ -3,6 +3,17 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-10-05
+
+### 变更（不兼容）
+
+- **agent 注册/续期 seam 报文迁到独立 crate `wist-api`**：`wist_contracts::enrollment` 不再提供
+  `EnrollmentRequest` / `EnrollmentEnvelope` / `EnrollmentOutcome` / `EnrollmentStatus` /
+  `CredentialRenewal` / `CredentialRenewed` 及 kind 常量 —— 请改用 `wist-api::enrollment`。
+  这是「同一条 seam 两侧共用一份报文定义」的收口，避免两侧各留一份而静默漂移。
+- `wist_contracts::enrollment` **保留**被多条 seam 复用的领域类型：`HostProfile`、`AgentIdentity`、
+  `AgentIdentityStatus`、`CredentialBundle`、`InitialConfig`、`PolicyBinding`。
+
 ## [0.2.0] - 2026-10-04
 
 ### 变更（不兼容）

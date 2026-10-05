@@ -113,12 +113,7 @@ pub struct AgentStatusReport {
 }
 
 /// agent 本地客户端证书状态（上报给网关，供页面/告警展示）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(
-    kind = "struct",
-    domain = "Control",
-    module = "Control.Agent.Certificate"
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentCertificateStatus {
     /// 证书到期时刻（RFC3339）。
@@ -139,12 +134,7 @@ pub struct AgentCertificateStatus {
 ///
 /// 续签是后台动作，**不记录就等于静默**：agentd 把本地台账（`identity/renewal.json`）原样带上来，
 /// 网关只存 / 展示，不重算。与 [`AgentCertificateStatus`] 同口径：`None` = 还没报过。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(
-    kind = "struct",
-    domain = "Control",
-    module = "Control.Agent.Certificate"
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentCredentialRenewal {
     /// `not_due` / `renewed` / `failed` / `needs_reinstall` / `revoked`（与 agentd 本地台账同口径）。
