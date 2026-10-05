@@ -24,13 +24,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// agentd → 网关：拉取工作授权快照的 envelope kind。
-pub const POLL_WORK_KIND: &str = "poll_work";
-/// agentd → 网关：确认收到工作的 envelope kind。
-pub const ACK_WORK_KIND: &str = "ack_work";
-/// agentd → 网关：上报一次性工作执行结果的 envelope kind。
-pub const REPORT_WORK_RESULT_KIND: &str = "report_work_result";
-
 /// 常驻工作的状态取值（对应模型 `StandingWork.status`）。
 ///
 /// `superseded` 与 `revoked` 都不出现在 `WorkGrant.standing` 里：前者是「被新版本取代」，
@@ -152,25 +145,6 @@ impl OneShotWork {
     }
 }
 
-/// 工作授权快照：常驻工作的当前生效版本 + 未了结的一次性工作。
-///
-/// 幂等、可重复拉取；`sequence` 只用来让 agentd 判断「这份跟我手上的有没有变」，
-/// **不承担「指令重放」的语义**（那是控制指令流的事）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(kind = "struct", domain = "Control", module = "Control.Agent.Work")]
-#[serde(deny_unknown_fields)]
-pub struct WorkGrant {
-    pub agent_id: String,
-    /// 每个面一条。
-    #[serde(default)]
-    pub standing: Vec<StandingWork>,
-    #[serde(default)]
-    pub one_shot: Vec<OneShotWork>,
-    /// 授权序号（单调递增，每次授权/撤回/暂停/继续都 +1）。
-    pub sequence: i64,
-    pub granted_at: String,
-}
-
 /// 管理面授权或撤回工作的回执：一份工作一次。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
 #[jumo(kind = "struct", domain = "Control", module = "Control.Agent.Work")]
@@ -183,109 +157,6 @@ pub struct WorkReceipt {
     pub status: String,
     pub plan_version: i64,
     pub created_at: String,
-}
-
-/// agentd → 网关：拉取工作授权快照。
-///
-/// 带 `last_seen_sequence`（与本机手上那份的序号），网关可以据此在没变化时短路；
-/// 带 `wait_ms` 是为了允许将来的长轮询（现在是立即返回，字段先留着，免得改协议）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(
-    kind = "message",
-    role = "command",
-    domain = "Control",
-    module = "Control.AgentApp.FacingInterface"
-)]
-#[serde(deny_unknown_fields)]
-pub struct PollWork {
-    pub api_version: String,
-    pub kind: String,
-    pub agent_id: String,
-    pub instance_id: String,
-    pub last_seen_sequence: i64,
-    pub wait_ms: i64,
-    pub requested_at: String,
-}
-
-/// agentd → 网关：确认收到某份工作。
-///
-/// 常驻工作在 `plan_version` 变化后**也必须**确认：网关据此判断「期望的版本真到了吗」，
-/// 一直没确认的就是漂移。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(
-    kind = "message",
-    role = "command",
-    domain = "Control",
-    module = "Control.AgentApp.FacingInterface"
-)]
-#[serde(deny_unknown_fields)]
-pub struct AckWork {
-    pub api_version: String,
-    pub kind: String,
-    pub agent_id: String,
-    pub instance_id: String,
-    pub work_id: String,
-    pub plan_version: i64,
-    pub acknowledged_at: String,
-}
-
-/// 网关对 [`AckWork`] 的回应。
-///
-/// 是**工作域的结构**而不是协议消息（与 [`WorkGrant`] 同类）：它描述的是
-/// 「工作已被确认」这个领域事实，也要能被用例当成 outcome 引用。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(kind = "struct", domain = "Control", module = "Control.Agent.Work")]
-#[serde(deny_unknown_fields)]
-pub struct WorkAccepted {
-    pub work_id: String,
-    /// accepted | stale | unknown。
-    pub status: String,
-    pub accepted_at: String,
-}
-
-/// agentd → 网关：上报一次性工作的**执行结果**（进度与终态）。
-///
-/// 与 [`AckWork`] 的分工：确认回答「我收到了」，本消息回答「我做得怎么样了」。
-/// 两者分开是因为它们的**失败代价不同**：确认丢了只是页面晚一拍，结果丢了则意味着
-/// 「一件改变机器状态的活做完了，而控制面永远不知道它成没成」。
-///
-/// 为什么必须由 agent 上报而不是网关自己推：网关只知道派了什么；一件升级是否真的换上了、
-/// 失败了有没有回滚，只有在机器上的那个执行体知道。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(
-    kind = "message",
-    role = "command",
-    domain = "Control",
-    module = "Control.AgentApp.FacingInterface"
-)]
-#[serde(deny_unknown_fields)]
-pub struct ReportWorkResult {
-    pub api_version: String,
-    pub kind: String,
-    pub agent_id: String,
-    pub instance_id: String,
-    pub work_id: String,
-    /// 见 [`AGENT_REPORTABLE_WORK_STATUSES`]。
-    pub status: String,
-    /// 人看的说明：失败原因**原样带上**（如「摘要不符」「新版 60s 没起来，已回滚到 0.1.3」）。
-    /// 不写清原因，页面上就只剩一个无法解释的「失败」。
-    #[serde(default)]
-    pub detail: String,
-    pub reported_at: String,
-}
-
-/// 网关对 [`ReportWorkResult`] 的回应。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
-#[jumo(kind = "struct", domain = "Control", module = "Control.Agent.Work")]
-#[serde(deny_unknown_fields)]
-pub struct WorkResultAccepted {
-    pub work_id: String,
-    /// accepted | stale | unknown。
-    ///
-    /// `stale` = 这件活已经到终态了（被撤回、超期，或已经报过终态），后到的结果**不覆盖**它：
-    /// 一件活只能有一个终态，写第二次只会把历史抹掉。
-    pub status: String,
-    pub accepted_at: String,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -525,22 +396,6 @@ pub fn parse_interval_seconds(raw: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
-    fn standing(work_id: &str, family: &str, plan_version: i64) -> StandingWork {
-        StandingWork {
-            work_id: work_id.to_string(),
-            agent_id: "agent-1".to_string(),
-            family: family.to_string(),
-            spec: "unit-a,unit-b".to_string(),
-            catalog_version: 1,
-            proposal_id: None,
-            plan_version,
-            effective_from: "2026-09-23T00:00:00Z".to_string(),
-            status: "active".to_string(),
-            updated_by: "admin".to_string(),
-            updated_at: "2026-09-23T00:00:00Z".to_string(),
-        }
-    }
-
     fn one_shot(status: &str, interruptible: bool) -> OneShotWork {
         OneShotWork {
             work_id: "work-1".to_string(),
@@ -635,40 +490,6 @@ mod tests {
         // 判定只看冒号前的 ID，`arg` 不参与。
         assert!(is_known_exporter("dmesg:nvidia-xid"));
         assert!(!is_known_exporter("nope"));
-    }
-
-    #[test]
-    fn grant_round_trips_with_serde() {
-        let grant = WorkGrant {
-            agent_id: "agent-1".to_string(),
-            standing: vec![standing("work-a", "LoginSession", 2)],
-            one_shot: vec![one_shot("running", true)],
-            sequence: 7,
-            granted_at: "2026-09-23T00:00:00Z".to_string(),
-        };
-        let json = serde_json::to_string(&grant).expect("serialize");
-        let decoded: WorkGrant = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, grant);
-    }
-
-    #[test]
-    fn grant_omits_absent_optional_fields_and_still_decodes() {
-        // `proposal_id` / `paused_at` / `current_step` 缺省时必须能解析：
-        // 手写 JSON（页面、联调）不该被迫填一堆 null。
-        let json = r#"{"agent_id":"a","standing":[],"one_shot":[],"sequence":0,
-                      "granted_at":"t"}"#;
-        let grant: WorkGrant = serde_json::from_str(json).expect("deserialize");
-        assert!(grant.standing.is_empty());
-        assert!(grant.one_shot.is_empty());
-    }
-
-    #[test]
-    fn rejects_unknown_fields() {
-        // 两侧各自演进时，多出来的字段必须是响亮的错误：静默忽略会让
-        // 「网关发了新字段、agentd 装作没看见」变成长期无声的语义分叉。
-        let json = r#"{"agent_id":"a","standing":[],"one_shot":[],"sequence":0,
-                      "granted_at":"t","extra":1}"#;
-        assert!(serde_json::from_str::<WorkGrant>(json).is_err());
     }
 
     // ── 工作参数（`spec`）的编码 ──
