@@ -12,12 +12,17 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct HostProfile {
     pub node_id: String,
+    /// 系统主机名：`HOSTNAME` → `COMPUTERNAME` → `/etc/hostname` → `gethostname`；
+    /// 都拿不到时才用占位名 `local-host`（macOS 上没有 `/etc/hostname`，靠最后那个系统调用兜底）。
     pub hostname: String,
     pub os: String,
     pub arch: String,
     pub machine_id: String,
     pub cloud_instance_id: Option<String>,
     pub k8s_node_uid: Option<String>,
+    /// 有信息量的本机网卡地址，形如 `en0 192.168.3.178/24`（网卡名 + 地址/掩码）。
+    /// 采集侧已滤掉 IPv6 链路本地（`fe80::/10`）/ 回环 / IPv4 自分配；空表 = 还没上报过或确实没有。
+    /// 多网卡主机不会再把十几条噪声地址带上管理面。
     pub ip_addresses: Vec<String>,
 }
 
