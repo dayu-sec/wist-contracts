@@ -3,6 +3,18 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.8.0] - 2026-10-11
+
+### 变更（不兼容）
+
+- **`agent_config` 模块移出到 `wist-agentd`**：agent 的**本地运行配置**（`agentd.toml` 的 `AgentConfig`
+  及各段）不属于「edge ↔ center 交换的契约」，已迁入**唯一生产消费者** `wist-agentd`
+  （`wist_agentd::config::agent_config`）。`wist-contracts` 不再提供 `agent_config` 模块。
+- **配置校验 `validate_config` 随之归位**到 `wist-agentd::config::validate`；`wist-validate` 不再提供
+  `config` 模块（其 config fixture 测试也一并迁入 `wist-agentd`）。
+- **线上 JSON 不变**：本次只搬位置、未改字段，但**引用该模块的消费方需一起升级**。
+  `wist-agentd` / `wist-gateway` 已同步。
+
 ## [0.7.0] - 2026-10-06
 
 ### 变更（不兼容）

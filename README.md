@@ -22,7 +22,6 @@ consumer.
 | ------------------- | ---------------------------------------------------- |
 | `action_plan`       | The `ActionPlan` executed by `wist-exec`.            |
 | `action_result`     | The result of an execution.                          |
-| `agent_config`      | The `wist-agentd` runtime configuration (`agentd.toml`). |
 | `agent_state`       | Agent runtime state (identity, credentials, mode).   |
 | `agent_uplink`      | Data-plane uplink grant (control plane) and the agent-reported effective uplink state. |
 | `capability_report` | Agent capability declarations.                       |

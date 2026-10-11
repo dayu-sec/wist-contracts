@@ -2,7 +2,6 @@
 
 pub mod action_plan;
 pub mod action_result;
-pub mod agent_config;
 pub mod agent_state;
 pub mod agent_uplink;
 pub mod capability_report;
