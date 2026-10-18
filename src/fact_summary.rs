@@ -17,7 +17,7 @@
 //!
 //! ## 摘要版本前缀
 //!
-//! 前缀 `fact-v1` 表达的是**规范化算法/字段集的版本**。改字段集（例如以后纳入容器或
+//! 前缀 `fact-v2` 表达的是**规范化算法/字段集的版本**。改字段集（例如以后纳入容器或
 //! 资源画像）时必须 bump 它 —— 否则新旧两侧对同一台机器会给出不同的「没变」，
 //! 而这个差异是静默的。带上前缀后，版本切换会强制一次重报，而不是静默错判。
 
@@ -25,7 +25,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// 规范化算法 / 字段集的版本（见模块注释）。
-pub const FACT_DIGEST_VERSION: &str = "fact-v1";
+pub const FACT_DIGEST_VERSION: &str = "fact-v2";
 
 /// 事实的**内容**部分（判据、幂等键的输入）。
 ///
@@ -39,15 +39,25 @@ pub struct FactContent {
     pub process_executables: Vec<String>,
     pub packages: Vec<String>,
     pub listen_ports: Vec<String>,
+    /// 网关下发、本机**实际探测过**的路径（白名单）。
+    ///
+    /// 与 `present_paths` 一起把「没探测」与「探测了但不存在」分开：
+    /// 只报存在项的话，空列表会同时意味着两件事，三态求值就退化成二态了。
+    pub probed_paths: Vec<String>,
+    /// 其中**存在**的路径（`probed_paths` 的子集）。
+    pub present_paths: Vec<String>,
 }
 
 impl FactContent {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         os: impl Into<String>,
         arch: impl Into<String>,
         process_executables: Vec<String>,
         packages: Vec<String>,
         listen_ports: Vec<String>,
+        probed_paths: Vec<String>,
+        present_paths: Vec<String>,
     ) -> Self {
         Self {
             os: os.into(),
@@ -55,10 +65,12 @@ impl FactContent {
             process_executables,
             packages,
             listen_ports,
+            probed_paths,
+            present_paths,
         }
     }
 
-    /// 内容摘要（形如 `fact-v1:sha256:<hex>`）。
+    /// 内容摘要（形如 `fact-v2:sha256:<hex>`）。
     ///
     /// 归一化（去重 + 定序）放在**这个函数内部**，而不是只靠调用方：
     /// 不变式要由主张它的函数来守 —— 否则调用方传进来的顺序或重复项一变，
@@ -70,6 +82,8 @@ impl FactContent {
             process_executables: normalized(&self.process_executables),
             packages: normalized(&self.packages),
             listen_ports: normalized(&self.listen_ports),
+            probed_paths: normalized(&self.probed_paths),
+            present_paths: normalized(&self.present_paths),
         };
         // 对 &str / Vec<String> 序列化不可能失败；不用 unwrap_or_default ——
         // 那会把"序列化失败"变成"空输入的常量摘要"，等于"内容永远没变"，上报永久停摆。
@@ -89,6 +103,8 @@ struct CanonicalContent<'a> {
     process_executables: Vec<String>,
     packages: Vec<String>,
     listen_ports: Vec<String>,
+    probed_paths: Vec<String>,
+    present_paths: Vec<String>,
 }
 
 fn normalized(values: &[String]) -> Vec<String> {
@@ -109,14 +125,16 @@ mod tests {
             executables.iter().map(|value| value.to_string()).collect(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
         )
     }
 
     #[test]
     fn digest_is_stable_and_versioned() {
         let digest = content(&["/usr/bin/xcodebuild"]).content_digest();
-        assert!(digest.starts_with("fact-v1:sha256:"), "{digest}");
-        assert_eq!(digest.len(), "fact-v1:sha256:".len() + 64);
+        assert!(digest.starts_with("fact-v2:sha256:"), "{digest}");
+        assert_eq!(digest.len(), "fact-v2:sha256:".len() + 64);
         // 同一内容重复计算必须一致（否则幂等键本身就不成立）。
         assert_eq!(digest, content(&["/usr/bin/xcodebuild"]).content_digest());
     }
@@ -149,6 +167,8 @@ mod tests {
             content.process_executables.clone(),
             content.packages.clone(),
             content.listen_ports.clone(),
+            content.probed_paths.clone(),
+            content.present_paths.clone(),
         );
         assert_eq!(before, recomputed.content_digest());
     }
@@ -156,13 +176,23 @@ mod tests {
     #[test]
     fn packages_and_listen_ports_are_part_of_the_digest() {
         // 这两个字段同样进内容摘要（用途判据的输入）：任一变则重报。
-        let base = FactContent::new("linux", "x86_64", Vec::new(), Vec::new(), Vec::new())
-            .content_digest();
+        let base = FactContent::new(
+            "linux",
+            "x86_64",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .content_digest();
         let with_package = FactContent::new(
             "linux",
             "x86_64",
             Vec::new(),
             vec!["nginx".to_string()],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
         )
         .content_digest();
@@ -172,6 +202,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec!["443".to_string()],
+            Vec::new(),
+            Vec::new(),
         )
         .content_digest();
         assert_ne!(base, with_package);
@@ -180,13 +212,92 @@ mod tests {
     }
 
     #[test]
+    fn path_lists_are_normalized_like_every_other_list() {
+        let digest = |probed: &[&str], present: &[&str]| {
+            FactContent::new(
+                "linux",
+                "x86_64",
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                probed.iter().map(|value| value.to_string()).collect(),
+                present.iter().map(|value| value.to_string()).collect(),
+            )
+            .content_digest()
+        };
+        // 顺序与重复不影响摘要（与其它列表同一口径）。
+        assert_eq!(
+            digest(&["/b", "/a", "/a"], &["/b"]),
+            digest(&["/a", "/b"], &["/b"])
+        );
+        // 「探测过但不存在」与「存在」必须是不同的摘要。
+        assert_ne!(digest(&["/a"], &["/a"]), digest(&["/a"], &[]));
+    }
+
+    #[test]
+    fn probed_and_present_paths_are_part_of_the_digest() {
+        // 「探测过但不存在」与「没探测过」必须是两个不同的摘要输入：
+        // 前者是 No，后者是 Unknown；混成一样，三态求值就断了。
+        let base = FactContent::new(
+            "linux",
+            "x86_64",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec!["/var/log/sudo.log".to_string()],
+            Vec::new(),
+        )
+        .content_digest();
+        let present = FactContent::new(
+            "linux",
+            "x86_64",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec!["/var/log/sudo.log".to_string()],
+            vec!["/var/log/sudo.log".to_string()],
+        )
+        .content_digest();
+        let not_probed = FactContent::new(
+            "linux",
+            "x86_64",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .content_digest();
+        assert_ne!(base, present);
+        assert_ne!(base, not_probed);
+    }
+
+    #[test]
     fn an_empty_content_digest_is_stable_and_well_formed() {
-        let digest = FactContent::new("", "", Vec::new(), Vec::new(), Vec::new()).content_digest();
-        assert!(digest.starts_with("fact-v1:sha256:"));
-        assert_eq!(digest.len(), "fact-v1:sha256:".len() + 64);
+        let digest = FactContent::new(
+            "",
+            "",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .content_digest();
+        assert!(digest.starts_with("fact-v2:sha256:"));
+        assert_eq!(digest.len(), "fact-v2:sha256:".len() + 64);
         assert_eq!(
             digest,
-            FactContent::new("", "", Vec::new(), Vec::new(), Vec::new()).content_digest()
+            FactContent::new(
+                "",
+                "",
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .content_digest()
         );
     }
 }

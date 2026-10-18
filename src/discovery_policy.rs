@@ -82,6 +82,13 @@ pub struct DiscoveryAspectPolicySet {
     pub published_at: String,
     #[serde(default)]
     pub policies: Vec<DiscoveryAspectPolicy>,
+    /// 本机需要**探测存在性**的路径白名单。
+    ///
+    /// 由网关从采集目录的 `match` 条件（`path_exists:<绝对路径>`）推导后随策略下发；
+    /// agentd 探完把结果放进事实摘要的 `probed_paths` / `present_paths`。
+    /// 空 = 不探测（旧网关，或这一版目录没有任何路径条件）。
+    #[serde(default)]
+    pub probe_paths: Vec<String>,
 }
 
 impl DiscoveryAspectPolicySet {
@@ -94,7 +101,14 @@ impl DiscoveryAspectPolicySet {
             policy_version,
             published_at,
             policies,
+            probe_paths: Vec::new(),
         }
+    }
+
+    /// 带上待探测的路径（网关侧在装载目录后拼上）。
+    pub fn with_probe_paths(mut self, paths: Vec<String>) -> Self {
+        self.probe_paths = paths;
+        self
     }
 
     /// 取某个方向的策略；表里没有该方向返回 `None`（调用方回退到自己的默认值）。
