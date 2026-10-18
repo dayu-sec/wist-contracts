@@ -3,6 +3,17 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.0] - 2026-10-18
+
+### 新增
+
+- **事实摘要支持路径存在性**：`FactContent` 增加 `probed_paths` / `present_paths`，
+  规范化与摘要版本升到 **`fact-v2`**（字段集变了，升级后强制重报一次）。
+  两列必须成对：只有「探测过」与「存在」分开，`path_exists` 的三态求值才成立
+  （没探测 = 无法判定，探测过但不存在 = 不命中）。
+- **发现策略表增加 `probe_paths`**：网关从采集目录的 `path_exists:` 条件推导后下发，
+  agentd 按白名单逐条探存在性。空 = 不探测（旧网关 / 目录无路径条件）。
+
 ## [0.8.0] - 2026-10-11
 
 ### 变更（不兼容）
