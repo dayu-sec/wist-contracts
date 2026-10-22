@@ -220,6 +220,17 @@ pub struct WorkSpecSource {
     /// 而是这条日志的**固有格式**：说错了要么把多行记录拆散、要么把独立记录粘成一条。
     #[serde(default = "default_multiline")]
     pub multiline: String,
+    /// 从 `target` 匹配集合里剔掉的**绝对路径 glob**（默认空）。
+    ///
+    /// 只对 `FileGlob` 有意义，按**展开后的完整路径**匹配（不是文件名）。为什么需要它：
+    /// 容器日志的选源根是 `/var/log/containers/*.log`，而目录里同时有不该采的容器
+    /// （sidecar / init / 平台自身的 pod）；没有排除项就只能把业务服务名写进 pattern，
+    /// 而服务名会随集群漂移。
+    ///
+    /// 空数组**不序列化**：旧 agent 的 `WorkSpecSource` 是 `deny_unknown_fields` 的，
+    /// 发一个空字段过去只会给旧机队添一种没必要的解析失败。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_globs: Vec<String>,
 }
 
 fn default_multiline() -> String {
@@ -265,8 +276,8 @@ impl WorkSpec {
 /// agentd **有可能真的执行**的来源 kind（其余 kind 一律 `unsupported`，不当没看见）。
 ///
 /// 注意：kind 对了**还不够** —— 目标形态也有限制，见 [`is_executable_source`]：
-/// `FileGlob` 要是显式绝对路径、`Exporter` 要是**已知导出器 ID**。只按 kind 判会把
-/// 「通配目标」「写错的导出器」当成可采，而那在采集端落不了地。
+/// `FileGlob` 要是**绝对路径**（显式路径或受支持的 glob）、`Exporter` 要是**已知导出器 ID**。
+/// 只按 kind 判会把「`**` 递归」「`~` 与相对路径」「写错的导出器」当成可采，而那在采集端落不了地。
 pub const EXECUTABLE_SOURCE_KINDS: &[&str] = &["FileGlob", "MetricInterval", "Exporter"];
 
 /// 目标里有没有通配元字符 —— 有就说明它不是**显式单路径**。
@@ -278,9 +289,30 @@ pub fn has_glob_meta(target: &str) -> bool {
 ///
 /// 采集端（agentd 第一版）只实现显式单路径输入：**不做 glob 展开、也不展开 `~`**
 /// （见 `wist/wist-agentd/docs/design/log-file-input-spec.md` §2 的能力边界）。
-/// 所以 `/var/log/wifi.log*`、`~/Library/Logs/Homebrew/*` 这类目标今天都采不到。
+/// 单层 glob 从 W1 起可采，但那走 [`is_glob_path`]；`~` 与相对路径仍永远不可采。
+///
+/// 从 W1 起，带通配的目标由 [`is_glob_path`] / [`is_file_target`] 判定 —— 它们才是
+/// 「采集端接不接得了」的口径；本函数只留给**单文件**场景（例如「一个显式路径能否参与
+/// 存在性裁剪」：那一步只能对显式路径做，探测不到的路径不能当不存在）。
 pub fn is_explicit_path(target: &str) -> bool {
     target.starts_with('/') && !has_glob_meta(target)
+}
+
+/// 这个目标是不是**受支持的文件族 glob**：**绝对路径、有通配、不含 `**`**。
+///
+/// `**` 被拒不是保守，而是口径：采集端只扫 pattern 的固定前缀目录、`*` 不跨目录
+/// （`literal_separator`），递归展开既没实现也无法给出上限 —— 让它在目录装载期就被挡住，
+/// 比让 agent 每轮报一次 IO 错误好。
+pub fn is_glob_path(target: &str) -> bool {
+    target.starts_with('/') && has_glob_meta(target) && !target.contains("**")
+}
+
+/// 这个目标是不是采集端**能承接的文件目标**：显式绝对路径，或受支持的文件族 glob。
+///
+/// 不展开 `~`、不接受相对路径：相对路径的结果取决于进程 cwd，同一台机器换一种启动方式
+/// 就换一个采集对象，那不是「配置」，是运气。
+pub fn is_file_target(target: &str) -> bool {
+    is_explicit_path(target) || is_glob_path(target)
 }
 
 /// 定时导出器（`Exporter`）的**已知 ID**：协议层词表，网关 / agentd / web 三侧共用。
@@ -325,15 +357,15 @@ pub fn is_known_exporter(target: &str) -> bool {
     }
 }
 
-/// 一条来源今天**能不能被采**：`kind` 要 agentd 能执行，`target` 还要是显式路径。
+/// 一条来源今天**能不能被采**：`kind` 要 agentd 能执行，`target` 还要是它接得住的形态。
 ///
 /// 为什么把两件事放在一个函数里：网关的采集就绪度（「这个面能不能派下去」）与 agentd 的
 /// 「这条来源接不接得了」必须是**同一个判据**，否则会出现「网关说可采、agent 拿到后报
 /// unsupported」这种没人能发现的矛盾。加一种 kind 支持时**只改这里**。
 pub fn is_executable_source(kind: &str, target: &str) -> bool {
     match kind {
-        // 本地文件采集：只支持显式绝对路径（无 glob、无 `~`）。
-        "FileGlob" => is_explicit_path(target),
+        // 本地文件采集：显式绝对路径，或受支持的文件族 glob（无 `**`、无 `~`）。
+        "FileGlob" => is_file_target(target),
         // 指标：`target` 是采集周期（如 `15s`、`60s`），不是路径。
         "MetricInterval" => true,
         // 定时导出器：`target` 要是**已知导出器 ID**（可带 `:arg`）。未知 ID 不可执行。
@@ -354,7 +386,7 @@ impl WorkSpecUnit {
             .collect()
     }
 
-    /// 本单元有没有 agentd 目前接不了的来源（kind 不认识，或目标不是显式路径）。
+    /// 本单元有没有 agentd 目前接不了的来源（kind 不认识，或目标不是可采的绝对路径）。
     pub fn unsupported_sources(&self) -> Vec<&WorkSpecSource> {
         self.sources
             .iter()
@@ -453,7 +485,7 @@ mod tests {
 
     #[test]
     fn only_explicit_absolute_paths_are_collectable_file_targets() {
-        // 采集端（agentd 第一版）只实现**显式单路径**：不做 glob 展开、不展开 `~`。
+        // `is_explicit_path` 现在只服务「单文件」语义（例如存在性裁剪只能对显式路径做）。
         // 这个判据被两侧共用（网关的采集就绪度 + agentd 的接受逻辑），所以在这里钉死。
         assert!(is_explicit_path("/var/log/install.log"));
         assert!(!is_explicit_path("/var/log/wifi.log*"));
@@ -463,12 +495,36 @@ mod tests {
     }
 
     #[test]
+    fn file_targets_accept_single_level_globs_and_reject_recursion() {
+        // W1：`FileGlob` 判据从「显式路径」放宽为「绝对路径，允许通配」。
+        assert!(is_glob_path("/var/log/containers/*.log"));
+        assert!(is_glob_path("/var/log/pods/*/*/*.log"));
+        assert!(is_glob_path("/var/lib/postgresql/*/data/log/*.csv"));
+        assert!(is_file_target("/var/log/containers/*.log"));
+        // 显式路径仍是合法文件目标（单文件 input 走它）。
+        assert!(is_file_target("/var/log/auth.log"));
+        // `**` 不展开：采集端只扫固定前缀目录，接受它只会在采集端变成每轮 IO 错误。
+        assert!(!is_glob_path("/var/log/**/*.log"));
+        assert!(!is_file_target("/var/log/**/*.log"));
+        // `~` / 相对路径不展开。
+        assert!(!is_glob_path("~/Library/Logs/*.log"));
+        assert!(!is_file_target("relative/*.log"));
+        // 空目标不是文件目标。
+        assert!(!is_file_target(""));
+    }
+
+    #[test]
     fn executability_needs_both_a_supported_kind_and_a_supported_target() {
         // 指标：`target` 是周期不是路径，不管显式路径那一条。
         assert!(is_executable_source("MetricInterval", "15s"));
-        // 文件：kind 对了，目标还得是显式路径 —— 否则网关会把采不到的面报成“可采”。
+        // 文件：显式路径与单层 glob 都可执行；`**` / `~` 不可执行（网关不能把它们报成“可采”）。
         assert!(is_executable_source("FileGlob", "/var/log/app.log"));
-        assert!(!is_executable_source("FileGlob", "/var/log/app*"));
+        assert!(is_executable_source(
+            "FileGlob",
+            "/var/log/containers/*.log"
+        ));
+        assert!(!is_executable_source("FileGlob", "/var/log/**/*.log"));
+        assert!(!is_executable_source("FileGlob", "~/logs/*.log"));
         // 导出器：kind 对了，ID 还得是**已知的**（`last,lastb` 是 macOS 侧、尚未实现）。
         assert!(is_executable_source("Exporter", "smartctl"));
         assert!(is_executable_source("Exporter", "dmesg:panic"));
@@ -506,6 +562,7 @@ mod tests {
                         kind: "MetricInterval".to_string(),
                         target: "15s".to_string(),
                         multiline: "none".to_string(),
+                        exclude_globs: Vec::new(),
                     }],
                 },
                 WorkSpecUnit {
@@ -518,13 +575,15 @@ mod tests {
                             kind: "Exporter".to_string(),
                             target: "sqlite-snapshot(TCC.db)".to_string(),
                             multiline: "none".to_string(),
+                            exclude_globs: Vec::new(),
                         },
                         WorkSpecSource {
                             kind: "FileGlob".to_string(),
-                            // 显式单路径：采集端今天只能执行这种（通配未实现）。
+                            // 显式单路径：单文件采集走 `startup_position` / 检查点的单文件语义。
                             target: "/var/log/tccd.log".to_string(),
                             // 多行格式是这条日志的固有属性，跟着来源走。
                             multiline: "indented".to_string(),
+                            exclude_globs: Vec::new(),
                         },
                     ],
                 },
@@ -551,23 +610,55 @@ mod tests {
     }
 
     #[test]
-    fn a_glob_file_source_counts_as_unsupported() {
-        // 类型是 FileGlob（"可 tail 的文件"）不等于可采：**目标形态**也得是采集端能执行的。
-        // 否则网关会把一个根本采不到的面报成“可采”，而 agentd 那边只会报“路径不存在”。
-        let unit = WorkSpecUnit {
-            unit_id: "mac-wifi".to_string(),
+    fn a_glob_file_source_is_collectable_but_recursive_globs_are_not() {
+        // W1 起：单层 glob 是采集端能执行的来源（容器日志就靠它）。
+        let mut unit = WorkSpecUnit {
+            unit_id: "linux-container-stdout".to_string(),
             capability: "collect_logs".to_string(),
             rule_ref: String::new(),
             requires_privilege: "root".to_string(),
             sources: vec![WorkSpecSource {
                 kind: "FileGlob".to_string(),
-                target: "/var/log/wifi.log*".to_string(),
+                target: "/var/log/containers/*.log".to_string(),
                 multiline: "none".to_string(),
+                exclude_globs: vec!["/var/log/containers/*_kube-system_*.log".to_string()],
             }],
         };
-        assert_eq!(unit.file_sources().len(), 1, "它仍是一条文件来源");
-        assert_eq!(unit.unsupported_sources().len(), 1, "但今天采不了");
+        assert_eq!(unit.file_sources().len(), 1, "它是一条文件来源");
+        assert!(unit.unsupported_sources().is_empty());
+        assert!(unit.has_executable_source());
+
+        // `**` 仍不可执行：递归展开没实现，接受它就等于承诺一个采不到的面。
+        unit.sources[0].target = "/var/log/**/*.log".to_string();
+        assert_eq!(unit.unsupported_sources().len(), 1);
         assert!(!unit.has_executable_source());
+    }
+
+    #[test]
+    fn exclude_globs_round_trip_and_stay_out_of_the_wire_when_empty() {
+        let mut source = WorkSpecSource {
+            kind: "FileGlob".to_string(),
+            target: "/var/log/containers/*.log".to_string(),
+            multiline: "none".to_string(),
+            exclude_globs: Vec::new(),
+        };
+        // 空排除项不进 JSON：旧 agent 的 `WorkSpecSource` 是 `deny_unknown_fields` 的。
+        assert_eq!(
+            serde_json::to_string(&source).expect("serialize"),
+            r#"{"kind":"FileGlob","target":"/var/log/containers/*.log","multiline":"none"}"#
+        );
+
+        source.exclude_globs = vec!["/var/log/containers/*_kube-system_*.log".to_string()];
+        let json = serde_json::to_string(&source).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<WorkSpecSource>(&json).expect("parse"),
+            source
+        );
+        // 老网关发来的来源没有这两个字段：默认必须能解出来。
+        let old = r#"{"kind":"FileGlob","target":"/a/*"}"#;
+        let parsed: WorkSpecSource = serde_json::from_str(old).expect("parse legacy source");
+        assert!(parsed.exclude_globs.is_empty());
+        assert_eq!(parsed.multiline, "none");
     }
 
     #[test]
@@ -634,6 +725,7 @@ mod tests {
                 kind: "MetricInterval".to_string(),
                 target: target.to_string(),
                 multiline: "none".to_string(),
+                exclude_globs: Vec::new(),
             }],
         };
         let mixed = WorkSpec {

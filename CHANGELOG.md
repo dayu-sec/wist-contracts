@@ -3,6 +3,23 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.1] - 2026-10-22
+
+### 新增
+
+- **文件族 glob 成为可执行的 `FileGlob` 目标**：判据从「显式绝对路径」放宽为
+  「绝对路径，允许通配、不允许 `**`」。新增 `is_glob_path()` / `is_file_target()`；
+  `is_executable_source("FileGlob", …)` 改用后者，`is_explicit_path()` 保留给单文件语义
+  （存在性裁剪只能对显式路径做）。`**` 被拒是有意的：采集端只扫 pattern 的固定前缀目录、
+  `*` 不跨目录，递归展开既没实现也给不出上限。
+- **`WorkSpecSource` 增 `exclude_globs`**（默认空，只对 `FileGlob` 有意义，按展开后的完整路径匹配）：
+  容器日志的 v1 选源靠它 —— `/var/log/containers/*.log` 再排除不该采的容器。
+  空数组**不序列化**：旧 agent 的 `WorkSpecSource` 是 `deny_unknown_fields` 的，
+  发一个空字段过去只会给旧机队添一种没必要的解析失败。
+
+> 兼容性：只增字段 + 放宽判据，不改既有线上 JSON；消费方仍可用 `version = "0.9"` 解析到 0.9.1。
+> 但**新能力要秩序**：glob 单元只有在机队上报了对应能力后才应翻 `active`（D7）。
+
 ## [0.9.0] - 2026-10-18
 
 ### 新增
