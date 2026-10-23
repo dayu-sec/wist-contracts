@@ -387,6 +387,16 @@ pub fn is_file_target(target: &str) -> bool {
     is_explicit_path(target) || is_glob_path(target)
 }
 
+/// 内核日志导出器（W3）：`journalctl -k -p 4 -o json`，**靠游标续读**。
+///
+/// 与其余导出器不同，它是**有状态**的：上一轮读到的游标落盘，下一轮从那里接着读。
+/// 契约只承诺 ID 与「可执行」；游标怎么存、失效（被 vacuum）怎么回退是采集端的事
+/// （见 `linux-server-log-coverage-plan.md` §6 W3 / D6）。
+///
+/// 为什么单独给个常量：agentd 的 `argv` 与状态处理要**按 ID 分支**，字面量散在两侧
+/// 迟早会漂（一处改名、另一处还在按旧名特判，表现就是「游标不生效、每轮重读」）。
+pub const KERNEL_LOG_EXPORTER: &str = "journalctl-kernel";
+
 /// 定时导出器（`Exporter`）的**已知 ID**：协议层词表，网关 / agentd / web 三侧共用。
 ///
 /// 为什么词表放这里：`is_executable_source` 要判「这条 `Exporter` 目标今天真能不能采」，
@@ -403,6 +413,7 @@ pub const EXPORTER_IDS: &[&str] = &[
     "smartctl",
     "dmesg",
     "auditd-execve",
+    KERNEL_LOG_EXPORTER,
 ];
 
 /// 把一个 `Exporter` 目标拆成 `(id, arg)`：`"dmesg:panic"` → `("dmesg", Some("panic"))`。
@@ -618,6 +629,17 @@ mod tests {
         // 判定只看冒号前的 ID，`arg` 不参与。
         assert!(is_known_exporter("dmesg:nvidia-xid"));
         assert!(!is_known_exporter("nope"));
+    }
+
+    #[test]
+    fn the_kernel_log_exporter_is_in_the_contract_vocabulary() {
+        // 词表只增不改名：这一条丢了，网关会把内核单元判成「不可采」（`active` 直接被拦），
+        // agentd 也会把它报成 unsupported。
+        assert!(EXPORTER_IDS.contains(&KERNEL_LOG_EXPORTER));
+        assert!(is_known_exporter(KERNEL_LOG_EXPORTER));
+        assert!(is_executable_source("Exporter", KERNEL_LOG_EXPORTER));
+        // 前缀相似但不是同一个 ID：不能靠 starts_with 之类的模糊匹配混过去。
+        assert!(!is_known_exporter("journalctl-kernelx"));
     }
 
     // ── 工作参数（`spec`）的编码 ──
