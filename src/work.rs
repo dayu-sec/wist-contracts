@@ -24,6 +24,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::capability_report::LogsCapabilities;
+
 /// 常驻工作的状态取值（对应模型 `StandingWork.status`）。
 ///
 /// `superseded` 与 `revoked` 都不出现在 `WorkGrant.standing` 里：前者是「被新版本取代」，
@@ -397,6 +399,68 @@ pub fn is_file_target(target: &str) -> bool {
 /// 迟早会漂（一处改名、另一处还在按旧名特判，表现就是「游标不生效、每轮重读」）。
 pub const KERNEL_LOG_EXPORTER: &str = "journalctl-kernel";
 
+/// 这条来源缺哪些日志能力（空 = 齐了）。
+///
+/// `None` = 这个 kind 不归 logs 能力管（`MetricInterval` 是指标；未知/不可执行的形态
+/// 已经被 [`is_executable_source`] 拦下，不需要第二套说法）。
+///
+/// 返回值是「桶:值」（`file_inputs:glob` / `multiline_modes:indented` /
+/// `exporters:journalctl-kernel`），可以直接用在拒绝文案与自观测里。
+///
+/// 为什么把判定放契约：网关（派活时）与 agentd（上报时）必须用**同一份**词表。
+/// 两边各写一份的结果是「agent 说自己支持 glob、网关按一套旧名单判它不支持」——
+/// 而且这种矛盾只能靠人去两台机器上对日志才能发现。
+pub fn missing_log_capabilities(
+    kind: &str,
+    target: &str,
+    multiline: &str,
+    declared: &LogsCapabilities,
+) -> Option<Vec<String>> {
+    let declared_has = |bucket: &[String], value: &str| bucket.iter().any(|item| item == value);
+
+    match kind {
+        "FileGlob" => {
+            // 不可执行的形态交给 `is_executable_source` 说，不在这里扣一顶“能力不够”的帽子。
+            if !is_file_target(target) {
+                return None;
+            }
+            let mut missing = Vec::new();
+            let need = if is_glob_path(target) {
+                FILE_INPUT_GLOB
+            } else {
+                FILE_INPUT_ABSOLUTE_PATH
+            };
+            if !declared_has(&declared.file_inputs, need) {
+                missing.push(format!("file_inputs:{need}"));
+            }
+            // `none` 是老读法（一行一条），不算一项需要协商的能力。
+            if multiline != "none" && !declared_has(&declared.multiline_modes, multiline) {
+                missing.push(format!("multiline_modes:{multiline}"));
+            }
+            Some(missing)
+        }
+        "Exporter" => {
+            let (id, _) = parse_exporter_target(target)?;
+            Some(if declared_has(&declared.exporters, id) {
+                Vec::new()
+            } else {
+                vec![format!("exporters:{id}")]
+            })
+        }
+        _ => None,
+    }
+}
+
+/// agentd 能承接的**文件输入形态**（能力名）。
+///
+/// 与 [`is_file_target`] 同源：判定能采的形态，就是这里要声明的形态 —— 两边各写一份必然漂。
+pub const FILE_INPUT_ABSOLUTE_PATH: &str = "absolute-path";
+/// 见 [`FILE_INPUT_ABSOLUTE_PATH`]。
+pub const FILE_INPUT_GLOB: &str = "glob";
+
+/// agentd 支持的 `multiline` 模式（与 [`WorkSpecSource::multiline`] 的取值同源）。
+pub const MULTILINE_MODES: &[&str] = &["none", "indented"];
+
 /// 定时导出器（`Exporter`）的**已知 ID**：协议层词表，网关 / agentd / web 三侧共用。
 ///
 /// 为什么词表放这里：`is_executable_source` 要判「这条 `Exporter` 目标今天真能不能采」，
@@ -510,6 +574,7 @@ pub fn parse_interval_seconds(raw: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability_report::LogsCapabilities;
 
     fn one_shot(status: &str, interruptible: bool) -> OneShotWork {
         OneShotWork {
@@ -640,6 +705,125 @@ mod tests {
         assert!(is_executable_source("Exporter", KERNEL_LOG_EXPORTER));
         // 前缀相似但不是同一个 ID：不能靠 starts_with 之类的模糊匹配混过去。
         assert!(!is_known_exporter("journalctl-kernelx"));
+    }
+
+    // ── 能力协商（D7）：词表与判定同源 ──
+
+    /// 一个“什么都支持”的 agent 声明（agentd 上报的就是这一份的全集）。
+    fn full_logs() -> LogsCapabilities {
+        LogsCapabilities {
+            file_inputs: vec![
+                FILE_INPUT_ABSOLUTE_PATH.to_string(),
+                FILE_INPUT_GLOB.to_string(),
+            ],
+            multiline_modes: MULTILINE_MODES
+                .iter()
+                .map(|mode| mode.to_string())
+                .collect(),
+            exporters: EXPORTER_IDS.iter().map(|id| id.to_string()).collect(),
+            ..LogsCapabilities::default()
+        }
+    }
+
+    #[test]
+    fn capability_gaps_name_the_bucket_and_value() {
+        let old_agent = LogsCapabilities {
+            // W1 之前的 agentd：只会显式路径，不认识导出器能力。
+            file_inputs: vec![FILE_INPUT_ABSOLUTE_PATH.to_string()],
+            ..LogsCapabilities::default()
+        };
+        assert_eq!(
+            missing_log_capabilities("FileGlob", "/var/log/app.log", "none", &old_agent),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            missing_log_capabilities("FileGlob", "/var/log/app/*.log", "none", &old_agent),
+            Some(vec!["file_inputs:glob".to_string()])
+        );
+        // 多行模式也是能力：说错了会把记录拼碎。
+        assert_eq!(
+            missing_log_capabilities("FileGlob", "/var/log/a.log", "indented", &old_agent),
+            Some(vec!["multiline_modes:indented".to_string()])
+        );
+        // 导出器是具名能力：新 ID（如 W3 的内核日志）旧 agent 一定不认识。
+        assert_eq!(
+            missing_log_capabilities("Exporter", KERNEL_LOG_EXPORTER, "none", &old_agent),
+            Some(vec![format!("exporters:{KERNEL_LOG_EXPORTER}")])
+        );
+        // `arg` 不参与判定（与 `is_known_exporter` 同口径）。
+        assert_eq!(
+            missing_log_capabilities("Exporter", "dmesg:panic", "none", &full_logs()),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn an_exporter_id_outside_the_vocabulary_is_reported_as_missing() {
+        // 写错 ID / 未来 ID 遇到旧 agent：都是“没声明这个能力”，不能当成“不归我管”放过 ——
+        // 放过的后果是派下去、agent 回 unsupported。
+        assert_eq!(
+            missing_log_capabilities("Exporter", "journalctl-kernelx", "none", &full_logs()),
+            Some(vec!["exporters:journalctl-kernelx".to_string()])
+        );
+        // 带 `arg` 也一样：只按 ID 判。
+        assert_eq!(
+            missing_log_capabilities("Exporter", "dmesg:panic", "none", &old_style_logs()),
+            Some(vec!["exporters:dmesg".to_string()])
+        );
+    }
+
+    /// 只声明了“显式路径 + 任何导出器”这类旧能力的 agent。
+    fn old_style_logs() -> LogsCapabilities {
+        LogsCapabilities {
+            file_inputs: vec![FILE_INPUT_ABSOLUTE_PATH.to_string()],
+            exporters: vec!["smartctl".to_string()],
+            ..LogsCapabilities::default()
+        }
+    }
+
+    #[test]
+    fn capability_checks_say_nothing_about_things_they_do_not_own() {
+        // 指标不走 logs 能力；不可执行的形态由 `is_executable_source` 说，不重复扣帽子。
+        assert_eq!(
+            missing_log_capabilities("MetricInterval", "15s", "none", &full_logs()),
+            None
+        );
+        assert_eq!(
+            missing_log_capabilities("FileGlob", "~/a/*.log", "none", &full_logs()),
+            None
+        );
+        assert_eq!(
+            missing_log_capabilities("UnifiedLogPredicate", "syspolicyd", "none", &full_logs()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_fully_declared_agent_is_missing_nothing_the_contract_calls_executable() {
+        // 防漂：契约说“能执行”的每一种形态，声明了全集就必须不报缺。
+        // 新增一个导出器 ID / 一种 multiline 模式而忘了加到常量里，这条会红。
+        let full = full_logs();
+        for target in ["/var/log/a.log", "/var/log/containers/*.log"] {
+            assert_eq!(
+                missing_log_capabilities("FileGlob", target, "none", &full),
+                Some(Vec::new()),
+                "{target}"
+            );
+        }
+        for mode in MULTILINE_MODES {
+            assert_eq!(
+                missing_log_capabilities("FileGlob", "/var/log/a.log", mode, &full),
+                Some(Vec::new()),
+                "{mode}"
+            );
+        }
+        for id in EXPORTER_IDS {
+            assert_eq!(
+                missing_log_capabilities("Exporter", id, "none", &full),
+                Some(Vec::new()),
+                "{id}"
+            );
+        }
     }
 
     // ── 工作参数（`spec`）的编码 ──

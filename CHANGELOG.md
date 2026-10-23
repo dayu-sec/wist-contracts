@@ -3,6 +3,27 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.4] - 2026-10-23
+
+### 新增（D7 能力协商）
+
+- **`LogsCapabilities` 增 `exporters`**（默认空）：agent 能跑的导出器 ID，取值是
+  `EXPORTER_IDS` 的子集。为什么单独一个桶而不并进 `file_inputs`：导出器是**具名命令**，
+  不是路径形态 —— 新增一个导出器（如 W3 的 `journalctl-kernel`）不需要新形态，
+  但需要 agent 真的认识它。
+- **`missing_log_capabilities(kind, target, multiline, declared)`**：一条来源还缺哪些能力
+  （`file_inputs:*` / `multiline_modes:*` / `exporters:*`；空 = 齐了）。
+  `None` = 这个 kind 不归 logs 能力管（指标；不可执行的形态由 `is_executable_source` 说）。
+  网关（派活时）与 agentd（上报时）用**同一份**判定，避免两侧各写一份名单而漂。
+- 常量 `FILE_INPUT_ABSOLUTE_PATH` / `FILE_INPUT_GLOB` / `MULTILINE_MODES`：与
+  `is_file_target` / `WorkSpecSource::multiline` 同源。
+
+### 兼容性
+
+- 只增字段（`#[serde(default)]`）：老网关发的 / 老 agent 收的报告少 `exporters` 仍能解析。
+- ⚠ 反方向不兼容：`AgentStatusReport` 是 `deny_unknown_fields` 的，所以**网关必须先升级**
+  （先能收），agentd 才能开始上报能力；这是 D7 的两阶段发布纪律。
+
 ## [0.9.3] - 2026-10-23
 
 ### 新增

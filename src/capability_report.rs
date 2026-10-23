@@ -76,14 +76,27 @@ pub struct MetricsCapabilities {
 #[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct LogsCapabilities {
+    /// 能承接的文件输入形态：`absolute-path` / `glob`（见 `work::FILE_INPUT_*`）。
+    ///
+    /// 为什么不是布尔：两种形态是**先后落地**的能力（显式路径早就有，单层 glob 是 W1）。
+    /// 一个旧 agent 能采 `/var/log/auth.log`，但拿到 `/var/log/postgresql/*` 只能报 unsupported。
     #[serde(default)]
     pub file_inputs: Vec<String>,
+    /// 能执行的数据面解析器（首版为空：解析不在 agent 侧）。
     #[serde(default)]
     pub parsers: Vec<String>,
+    /// 支持的 `multiline` 模式（`none` / `indented` / …）。
     #[serde(default)]
     pub multiline_modes: Vec<String>,
+    /// 支持的监视方式（首版为空）。
     #[serde(default)]
     pub watcher_modes: Vec<String>,
+    /// 能跑的定时导出器 ID（`work::EXPORTER_IDS` 的子集）。
+    ///
+    /// 为什么单独一个桶而不是并进 `file_inputs`：导出器是**具名命令**，不是路径形态 ——
+    /// 新加一个导出器（如 W3 的 `journalctl-kernel`）不需要新形态，但需要 agent 真的认识它。
+    #[serde(default)]
+    pub exporters: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
@@ -133,6 +146,29 @@ mod tests {
                 ..CapabilityLimits::default()
             },
         }
+    }
+
+    #[test]
+    fn logs_capabilities_round_trip_and_exporters_are_optional() {
+        // 旧 agent 不报 `exporters`：`#[serde(default)]` 解成空集，不报错。
+        let legacy = r#"{"file_inputs":["absolute-path"]}"#;
+        let logs: LogsCapabilities = serde_json::from_str(legacy).expect("decode");
+        assert_eq!(logs.file_inputs, vec!["absolute-path".to_string()]);
+        assert!(logs.exporters.is_empty());
+
+        let full = LogsCapabilities {
+            file_inputs: vec!["glob".to_string()],
+            exporters: vec!["journalctl-kernel".to_string()],
+            ..LogsCapabilities::default()
+        };
+        let json = serde_json::to_string(&full).expect("encode");
+        assert!(json.contains("journalctl-kernel"));
+        let back: LogsCapabilities = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, full);
+
+        // 字段漂移仍要显形（与同族结构一致）。
+        let drifted = r#"{"file_inputs":[],"nope":1}"#;
+        assert!(serde_json::from_str::<LogsCapabilities>(drifted).is_err());
     }
 
     #[test]
