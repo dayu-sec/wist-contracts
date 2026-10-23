@@ -231,6 +231,78 @@ pub struct WorkSpecSource {
     /// 发一个空字段过去只会给旧机队添一种没必要的解析失败。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_globs: Vec<String>,
+    /// 容器选源的结构化过滤器（默认空）。只对 `FileGlob` 有意义。
+    ///
+    /// 空（两个列表都空）**不序列化**：与 `exclude_globs` 同一个理由 —— 旧 agent 的
+    /// `WorkSpecSource` 是 `deny_unknown_fields` 的，发一个空字段过去只会给旧机队
+    /// 添一种没必要的解析失败。
+    ///
+    /// ⚠ 非空时**要求 agent 支持**（与 glob 单元同一条纪律）：能力上报（D7）未落地前，
+    /// 目录里带 filters 的单元必须保持 `draft`，机队升级验证后再单独翻 `active`。
+    #[serde(default, skip_serializing_if = "ContainerFilters::is_empty")]
+    pub filters: ContainerFilters,
+}
+
+/// 容器日志的选源根（写死，D4）。
+///
+/// `/var/log/pods` 下有 `0.log` / `1.log` 与重启序号歧义；`/var/log/containers` 里
+/// 每个活容器恰好一条 symlink，文件名自带 pod / ns / container。
+pub const CONTAINER_LOG_ROOT: &str = "/var/log/containers";
+
+/// 容器选源的结构化过滤器（默认全空 = 不过滤）。
+///
+/// 为什么不是「再写几条 pattern」：容器日志文件名本身就是
+/// `<pod>_<namespace>_<container>-<id>.log`，选源要用的三个维度全在里面；把 namespace
+/// 白名单散成 N 条 path pattern 会随集群漂移，而过滤器是**结构化**的、与文件名格式解耦。
+///
+/// 求值位置：**发现阶段**（agentd 展开 glob、剔完 `exclude_globs` 之后，读之前），
+/// 读取器不参与 —— 所以它不影响 tail / checkpoint / 轮转语义。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerFilters {
+    /// 只采这些 namespace（空 = 不限）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespace_in: Vec<String>,
+    /// 这些 pod 不采（空 = 不排除）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pod_not_in: Vec<String>,
+}
+
+impl ContainerFilters {
+    /// 两个列表都空 = 不过滤（空过滤器不上线，见 [`WorkSpecSource::filters`]）。
+    pub fn is_empty(&self) -> bool {
+        self.namespace_in.is_empty() && self.pod_not_in.is_empty()
+    }
+
+    /// 形状校验：过滤器里的值是**精确名字**，不是 pattern。
+    ///
+    /// 网关、web、agentd 三处共用这一份（否则会出现「页面能填、agentd 不认」）。
+    /// 不强制 RFC1123：这里只拦“一定对不上”的形态（空串 / 空白 / 通配符 / 超长），
+    /// 名字是否真存在由集群决定，不是配置校验能回答的。
+    pub fn validate(&self) -> Result<(), String> {
+        for (field, values) in [
+            ("namespace_in", &self.namespace_in),
+            ("pod_not_in", &self.pod_not_in),
+        ] {
+            for value in values {
+                if value.trim().is_empty() {
+                    return Err(format!("{field} 里有空值"));
+                }
+                if value.trim() != value {
+                    return Err(format!("{field} 里 {value:?} 带首尾空白"));
+                }
+                if value.contains(['*', '?', '[', ']']) {
+                    return Err(format!(
+                        "{field} 里 {value:?} 含通配符（这里是精确名字，不是 pattern）"
+                    ));
+                }
+                if value.len() > 253 {
+                    return Err(format!("{field} 里 {value:?} 过长（>253）"));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn default_multiline() -> String {
@@ -563,6 +635,7 @@ mod tests {
                         target: "15s".to_string(),
                         multiline: "none".to_string(),
                         exclude_globs: Vec::new(),
+                        filters: ContainerFilters::default(),
                     }],
                 },
                 WorkSpecUnit {
@@ -576,6 +649,7 @@ mod tests {
                             target: "sqlite-snapshot(TCC.db)".to_string(),
                             multiline: "none".to_string(),
                             exclude_globs: Vec::new(),
+                            filters: ContainerFilters::default(),
                         },
                         WorkSpecSource {
                             kind: "FileGlob".to_string(),
@@ -584,6 +658,7 @@ mod tests {
                             // 多行格式是这条日志的固有属性，跟着来源走。
                             multiline: "indented".to_string(),
                             exclude_globs: Vec::new(),
+                            filters: ContainerFilters::default(),
                         },
                     ],
                 },
@@ -622,6 +697,7 @@ mod tests {
                 target: "/var/log/containers/*.log".to_string(),
                 multiline: "none".to_string(),
                 exclude_globs: vec!["/var/log/containers/*_kube-system_*.log".to_string()],
+                filters: ContainerFilters::default(),
             }],
         };
         assert_eq!(unit.file_sources().len(), 1, "它是一条文件来源");
@@ -641,6 +717,7 @@ mod tests {
             target: "/var/log/containers/*.log".to_string(),
             multiline: "none".to_string(),
             exclude_globs: Vec::new(),
+            filters: ContainerFilters::default(),
         };
         // 空排除项不进 JSON：旧 agent 的 `WorkSpecSource` 是 `deny_unknown_fields` 的。
         assert_eq!(
@@ -658,7 +735,103 @@ mod tests {
         let old = r#"{"kind":"FileGlob","target":"/a/*"}"#;
         let parsed: WorkSpecSource = serde_json::from_str(old).expect("parse legacy source");
         assert!(parsed.exclude_globs.is_empty());
+        assert!(parsed.filters.is_empty());
         assert_eq!(parsed.multiline, "none");
+    }
+
+    #[test]
+    fn container_filters_round_trip_and_stay_out_of_the_wire_when_empty() {
+        let mut source = WorkSpecSource {
+            kind: "FileGlob".to_string(),
+            target: "/var/log/containers/*.log".to_string(),
+            multiline: "none".to_string(),
+            exclude_globs: Vec::new(),
+            filters: ContainerFilters::default(),
+        };
+        // 空过滤器不进 JSON（与 exclude_globs 同一条纪律：旧 agent 是 deny_unknown_fields）。
+        let json = serde_json::to_string(&source).expect("serialize");
+        assert!(!json.contains("filters"), "{json}");
+
+        source.filters = ContainerFilters {
+            namespace_in: vec!["prod".to_string()],
+            pod_not_in: vec!["debug-pod".to_string()],
+        };
+        let json = serde_json::to_string(&source).expect("serialize");
+        assert!(
+            json.contains(r#""filters":{"namespace_in":["prod"],"pod_not_in":["debug-pod"]}"#),
+            "{json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<WorkSpecSource>(&json).expect("parse"),
+            source
+        );
+
+        // 只给一半也要能解：另一侧默认空。
+        let half = r#"{"kind":"FileGlob","target":"/var/log/containers/*.log","filters":{"namespace_in":["prod"]}}"#;
+        let parsed: WorkSpecSource = serde_json::from_str(half).expect("parse half filters");
+        assert_eq!(parsed.filters.namespace_in, vec!["prod".to_string()]);
+        assert!(parsed.filters.pod_not_in.is_empty());
+    }
+
+    #[test]
+    fn an_explicitly_empty_filters_object_is_not_serialized() {
+        // 策展/页面可能显式写一个空对象（`filters = {}`）：它仍然等于“不过滤”，
+        // 不能在线上多出一个键 —— 旧 agent 是 `deny_unknown_fields` 的。
+        let source = WorkSpecSource {
+            kind: "FileGlob".to_string(),
+            target: "/var/log/containers/*.log".to_string(),
+            multiline: "none".to_string(),
+            exclude_globs: Vec::new(),
+            filters: ContainerFilters {
+                namespace_in: Vec::new(),
+                pod_not_in: Vec::new(),
+            },
+        };
+        let json = serde_json::to_string(&source).expect("serialize");
+        assert!(!json.contains("filters"), "{json}");
+    }
+
+    #[test]
+    fn container_filters_keep_values_verbatim() {
+        // 名字**不做归一化**（不折叠大小写、不去前后缀）：k8s 名字永远小写，
+        // 归一化反而会把写错的值当成能用。逐字保存、逐字比较（比较在 agentd）。
+        let filters = ContainerFilters {
+            namespace_in: vec!["Prod".to_string()],
+            pod_not_in: vec!["debug-pod".to_string()],
+        };
+        let json = serde_json::to_string(&filters).expect("serialize");
+        let parsed: ContainerFilters = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed.namespace_in, vec!["Prod".to_string()]);
+        assert_eq!(parsed.pod_not_in, vec!["debug-pod".to_string()]);
+    }
+
+    #[test]
+    fn container_filters_reject_unknown_keys() {
+        // `deny_unknown_fields`：拼错一个键（`namespaces`）不能静默当空过滤器 ——
+        // 那会让策展人以为「只采 prod」，实际全采。
+        assert!(serde_json::from_str::<ContainerFilters>(r#"{"namespaces":["prod"]}"#).is_err());
+        assert!(serde_json::from_str::<ContainerFilters>(r#"{"namespace_in":["prod"]}"#).is_ok());
+    }
+
+    #[test]
+    fn container_filters_reject_values_that_can_never_match() {
+        let ok = |namespace: &[&str], pods: &[&str]| ContainerFilters {
+            namespace_in: namespace.iter().map(|v| v.to_string()).collect(),
+            pod_not_in: pods.iter().map(|v| v.to_string()).collect(),
+        };
+
+        assert!(
+            ok(&["prod", "kube-system"], &["debug-pod"])
+                .validate()
+                .is_ok()
+        );
+        assert!(ok(&[], &[]).is_empty());
+        // 这些一定对不上（过滤器存的是**精确名字**，不是 pattern）：错在最早的入口就说。
+        assert!(ok(&[""], &[]).validate().is_err());
+        assert!(ok(&[" prod"], &[]).validate().is_err());
+        assert!(ok(&["prod*"], &[]).validate().is_err());
+        assert!(ok(&[], &["debug?pod"]).validate().is_err());
+        assert!(ok(&[&"x".repeat(254)], &[]).validate().is_err());
     }
 
     #[test]
@@ -726,6 +899,7 @@ mod tests {
                 target: target.to_string(),
                 multiline: "none".to_string(),
                 exclude_globs: Vec::new(),
+                filters: ContainerFilters::default(),
             }],
         };
         let mixed = WorkSpec {

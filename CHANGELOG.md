@@ -3,6 +3,30 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.2] - 2026-10-23
+
+### 新增
+
+- **`WorkSpecSource` 增 `filters: ContainerFilters`**（默认空，只对 `FileGlob` 有意义）：
+  容器选源的**结构化过滤器**（W2），`namespace_in`（白名单）/ `pod_not_in`（黑名单）。
+  与 `exclude_globs` 的分工：排除项是按**展开后的完整路径**匹配的 glob，会随集群里
+  pod 名字的形态漂移；过滤器只依赖 `\<pod>_\<ns>_\<container>-\<id>.log` 这个文件名约定，
+  由采集端在**发现阶段**求值（读取器不参与）。
+  两个列表都空时**整字段不序列化**（与 `exclude_globs` 同一条纪律：旧 agent 的
+  `WorkSpecSource` 是 `deny_unknown_fields` 的）。
+- `ContainerFilters::is_empty()` / `ContainerFilters::validate()`：后者把“一定匹配不上”的形状
+  （空串 / 首尾空白 / 通配符 / >253）拒在最早的入口，网关、web、agentd 三处共用一份。
+- `CONTAINER_LOG_ROOT = "/var/log/containers"`：选源根写死（D4）。`/var/log/pods` 下
+  有 `0.log` / `1.log` 与重启序号歧义，而这里每个活容器恰好一条 symlink、文件名带
+  pod / ns / container。
+
+### 兼容性
+
+- 只增字段：老网关发来的 spec 没有 `filters`，`#[serde(default)]` 解成空过滤器；
+  消费方仍可用 `version = "0.9"` 解析到 0.9.2。
+- ⚠ **反方向不兼容**：`filters` 非空时要求 agent 支持（D7 能力上报未落地前，
+  目录里带 filters 的容器单元保持 `draft`，机队升级验证后再单独翻 `active`）。
+
 ## [0.9.1] - 2026-10-22
 
 ### 新增
