@@ -97,6 +97,23 @@ pub struct LogsCapabilities {
     /// 新加一个导出器（如 W3 的 `journalctl-kernel`）不需要新形态，但需要 agent 真的认识它。
     #[serde(default)]
     pub exporters: Vec<String>,
+    /// 能承接的容器选源过滤器**维度**（`work::CONTAINER_FILTERS` 的子集：
+    /// `namespace_in` / `pod_not_in`）。
+    ///
+    /// 为什么必须单独一轴：`WorkSpecSource` 是 `deny_unknown_fields` 的，带 `filters` 的 spec
+    /// 遇到不认识的 agentd 会**整份拒收**（不是少采一条，是全停）。网关据此在派活时裁掉
+    /// 那条来源，而不是把整份工作发下去换一个 `unsupported`。
+    ///
+    /// 按**维度**而不是一个布尔：过滤器以后还会长（label 选择是独立字段，见 G11），
+    /// 老 agent 声明了 `namespace_in` 不应该因此被当成「也认识 label」。
+    #[serde(default)]
+    pub filters: Vec<String>,
+    /// 能承接的噪音行丢弃方式（`work::DROP_IF_CONTAINS_MODES` 的子集，目前只有 `substring`）。
+    ///
+    /// 与 `filters` 同一条纪律：`WorkSpecSource.drop_if_contains` 也是新字段，
+    /// 旧 agentd 收到就 `deny_unknown_fields` 整份拒收 —— 网关必须在派活前裁掉来源。
+    #[serde(default)]
+    pub drop_if_contains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
@@ -149,20 +166,23 @@ mod tests {
     }
 
     #[test]
-    fn logs_capabilities_round_trip_and_exporters_are_optional() {
-        // 旧 agent 不报 `exporters`：`#[serde(default)]` 解成空集，不报错。
+    fn logs_capabilities_round_trip_and_optional_buckets_stay_empty() {
+        // 旧 agent 不报 `exporters` / `filters`：`#[serde(default)]` 解成空集，不报错。
         let legacy = r#"{"file_inputs":["absolute-path"]}"#;
         let logs: LogsCapabilities = serde_json::from_str(legacy).expect("decode");
         assert_eq!(logs.file_inputs, vec!["absolute-path".to_string()]);
         assert!(logs.exporters.is_empty());
+        assert!(logs.filters.is_empty());
 
         let full = LogsCapabilities {
             file_inputs: vec!["glob".to_string()],
             exporters: vec!["journalctl-kernel".to_string()],
+            filters: vec!["namespace_in".to_string(), "pod_not_in".to_string()],
             ..LogsCapabilities::default()
         };
         let json = serde_json::to_string(&full).expect("encode");
         assert!(json.contains("journalctl-kernel"));
+        assert!(json.contains("namespace_in"));
         let back: LogsCapabilities = serde_json::from_str(&json).expect("decode");
         assert_eq!(back, full);
 

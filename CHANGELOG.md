@@ -3,6 +3,49 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.5] - 2026-10-24
+
+### 新增（G1 能力轴 + G3 记录边界）
+
+- **`LogsCapabilities.filters`**（默认空）：agent 能承接的容器过滤**维度**
+  （`namespace_in` / `pod_not_in`，取值来自 `CONTAINER_FILTERS`）。
+  为什么必须单列一轴：`WorkSpecSource` 是 `deny_unknown_fields` 的，带 `filters` 的 spec 落到
+  不认识的 agentd 会被**整份拒收**（不是少采一条，是全停）。
+- **`LogsCapabilities.drop_if_contains`**（默认空，目前只有 `substring`）：能承接的噪音行
+  丢弃方式。与 `filters` 同一条纪律（新字段 = 新能力）。
+- **`WorkSpecSource.drop_if_contains`**（默认空，不序列化）：含这些**精确子串**的记录整条丢弃。
+  配套 `validate_drop_if_contains`（条数 / 长度 / 空串 / 控制字符 / 重复），网关、agentd、
+  页面共用同一口径。
+- **`MULTILINE_MODES` 增 `mysql_slow` / `postgres_csv`**：MySQL slow log（`# Time:` 起块）
+  与 PostgreSQL csvlog（**引号外**的换行才切记录）。
+- **`missing_log_capabilities` 改为收整条来源**（`&WorkSpecSource`）：每加一个选源 / 读法字段
+  都要重新讨论“要不要传”，而“忘了传”的后果是整份 spec 被拒收。收整条来源后，新增字段时
+  编译器会把所有调用点指出来。
+- 常量 `FILTER_NAMESPACE_IN` / `FILTER_POD_NOT_IN` / `CONTAINER_FILTERS` /
+  `DROP_IF_CONTAINS_SUBSTRING` / `DROP_IF_CONTAINS_MODES`；`ContainerFilters::used_dimensions`
+  与能力词表同源。
+
+### 变更（事实摘要升 `fact-v3`）
+
+- **`FACT_DIGEST_VERSION` → `fact-v3`**：内容摘要的字段集变了，前缀必须跟着换，否则新旧两侧
+  对同一台机器会**静默**给出不同的「没变」。代价是升级后全网重新上报一次事实
+  （预期行为，不是故障）。
+- **`listen_ports` 只报稳定服务端口**：形如 `tcp:5432`，滤掉内核临时端口区间
+  （`>= EPHEMERAL_PORT_START`）。实测一台机器 246 个监听里 220 个是客户端 socket、端口复用池
+  与转发的副产物 —— 它们随无关进程生灭换号，等于让幂等键失效。
+- 新增常量 `EPHEMERAL_PORT_START`（32768）：agentd 用它决定哪些监听不上报，网关用它把
+  「没监听」×「这个区间没采」分开 —— 两侧共用一份，否则同一条事实会得出不同的三态结论。
+
+### 兼容性
+
+- **`fact-v3` 会触发一次全网重报**：摘要前缀变了，缓存里的旧摘要全部失效。
+- 只增字段 / 词表项，老数据仍能解析；但**反方向需要发布顺序**：
+  `AgentStatusReport` 与 `WorkSpecSource` 都是 `deny_unknown_fields` 的 —— 老网关收到新
+  `logs_capabilities` 会拒收整份状态上报，老 agentd 收到新 `spec` 字段会拒收整份工作。
+  现场滚动顺序是：**contracts → 网关（先能收）→ agentd → web → 目录包**；
+  编译上的依赖顺序仍是 contracts 先于其余所有仓。网关对 `drop_if_contains` 做了**降级**
+  （agent 不支持/未上报时去掉字段继续采），所以新的减法字段不再会导致整份工作拒收。
+
 ## [0.9.4] - 2026-10-23
 
 ### 新增（D7 能力协商）

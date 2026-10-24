@@ -216,7 +216,8 @@ pub struct WorkSpecUnit {
 pub struct WorkSpecSource {
     pub kind: String,
     pub target: String,
-    /// 怎么读这条来源：`none`（一行一条）| `indented`（行首缩进是上一条的续行）。
+    /// 怎么读这条来源：`none`（一行一条）| `indented`（行首缩进是上一条的续行）|
+    /// `mysql_slow`（`# Time:` 起块）| `postgres_csv`（**引号外**的换行才切记录）。
     ///
     /// 只对可 tail 的 `FileGlob` 有意义，其余 kind 恒为 `none`。**不是**"要不要多行"这个偏好，
     /// 而是这条日志的**固有格式**：说错了要么把多行记录拆散、要么把独立记录粘成一条。
@@ -239,10 +240,24 @@ pub struct WorkSpecSource {
     /// `WorkSpecSource` 是 `deny_unknown_fields` 的，发一个空字段过去只会给旧机队
     /// 添一种没必要的解析失败。
     ///
-    /// ⚠ 非空时**要求 agent 支持**（与 glob 单元同一条纪律）：能力上报（D7）未落地前，
-    /// 目录里带 filters 的单元必须保持 `draft`，机队升级验证后再单独翻 `active`。
+    /// ⚠ 非空时**要求 agent 支持**（与 glob 单元同一条纪律）：能力轴是
+    /// `LogsCapabilities.filters`（`namespace_in` / `pod_not_in`），网关在派活时裁掉
+    /// 不支持的来源；旧 agent 收到非空 `filters` 会拒收整份 spec。
     #[serde(default, skip_serializing_if = "ContainerFilters::is_empty")]
     pub filters: ContainerFilters,
+    /// 读进来的记录里，含这些**子串**的整条丢掉（默认空 = 不丢）。只对 `FileGlob` 有意义。
+    ///
+    /// 为什么是子串、不是正则：这是**噪音行**的白名单（`pam_unix(cron:session)` 这类
+    /// 每分钟一条、信息量为零的行），不是解析。正则意味着在采集端维护一套可执行表达式
+    /// （回溯、超时、误匹配都是新故障面），而子串能做到的事不需要它。
+    ///
+    /// 语义是“整条记录”：子串命中就丢整条，**不会只删命中那一行**而留下半条多行记录。
+    /// 丢弃数进 agentd 自观测（`telemetry noise dropped …`），不然“怎么少了”无处可查。
+    ///
+    /// 空数组**不序列化**：旧 agent 的 `WorkSpecSource` 是 `deny_unknown_fields` 的。
+    /// 非空时要求 agent 支持 `LogsCapabilities.drop_if_contains`（`substring`），网关据此裁源。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drop_if_contains: Vec<String>,
 }
 
 /// 容器日志的选源根（写死，D4）。
@@ -270,10 +285,86 @@ pub struct ContainerFilters {
     pub pod_not_in: Vec<String>,
 }
 
+/// 容器过滤器的维度名（**能力词表**的值）：与 [`ContainerFilters`] 的字段同名。
+///
+/// 为什么能力名 = 字段名：网关的报错文案（`filters:namespace_in`）与目录里的写法
+/// （`filters = { namespace_in = [...] }`）能一一对上，排查时不用再查一份映射表。
+pub const FILTER_NAMESPACE_IN: &str = "namespace_in";
+/// 见 [`FILTER_NAMESPACE_IN`]。
+pub const FILTER_POD_NOT_IN: &str = "pod_not_in";
+
+/// agentd 能承接的**全部**容器过滤维度（与 [`ContainerFilters::used_dimensions`] 同源）。
+///
+/// 新增一个过滤维度时：先在 [`ContainerFilters`] 里加字段，再往这里加名字 ——
+/// 两侧对不上的漂移由 `a_fully_declared_agent_is_missing_nothing_the_contract_calls_executable` 钉住。
+pub const CONTAINER_FILTERS: &[&str] = &[FILTER_NAMESPACE_IN, FILTER_POD_NOT_IN];
+
+/// 噪音行丢弃的**求值方式**（能力词表的值）。
+///
+/// 目前只有子串一种 —— 它跟正则不是同一个东西（见 [`WorkSpecSource::drop_if_contains`]）。
+/// 以后真要加正则，那是新的一项能力：旧 agent 不该被当成“也懂正则”。
+pub const DROP_IF_CONTAINS_SUBSTRING: &str = "substring";
+/// agentd 能承接的全部噪音行丢弃方式（目前只有子串）。
+pub const DROP_IF_CONTAINS_MODES: &[&str] = &[DROP_IF_CONTAINS_SUBSTRING];
+
+/// `drop_if_contains` 的条数上限（超过就是“在采集端写解析规则”，那条路不该走）。
+pub const DROP_IF_CONTAINS_MAX_ITEMS: usize = 8;
+/// 单个子串的长度上限（字节）。
+pub const DROP_IF_CONTAINS_MAX_BYTES: usize = 200;
+
+/// 校验 `drop_if_contains` 的形状：精确子串，不是 pattern。
+///
+/// 网关装载期、agentd 配置校验、web 表单三处共用同一口径（否则会出现“页面能填、
+/// agentd 不认”）。只拦“一定有意义不明”的形态：空串 / 首尾空白 / 控制字符 / 过长 / 太多 / 重复。
+pub fn validate_drop_if_contains(needles: &[String]) -> Result<(), String> {
+    if needles.len() > DROP_IF_CONTAINS_MAX_ITEMS {
+        return Err(format!(
+            "drop_if_contains 条数过多（{}，上限 {DROP_IF_CONTAINS_MAX_ITEMS}）",
+            needles.len()
+        ));
+    }
+    for (index, needle) in needles.iter().enumerate() {
+        if needle.trim().is_empty() {
+            return Err(format!("drop_if_contains[{index}] 是空串"));
+        }
+        if needle.trim() != needle {
+            return Err(format!("drop_if_contains[{index}] {needle:?} 带首尾空白"));
+        }
+        if needle.chars().any(char::is_control) {
+            return Err(format!("drop_if_contains[{index}] {needle:?} 含控制字符"));
+        }
+        if needle.len() > DROP_IF_CONTAINS_MAX_BYTES {
+            return Err(format!(
+                "drop_if_contains[{index}] 过长（{} 字节，上限 {DROP_IF_CONTAINS_MAX_BYTES}）",
+                needle.len()
+            ));
+        }
+        if needles[..index].contains(needle) {
+            return Err(format!("drop_if_contains[{index}] {needle:?} 重复"));
+        }
+    }
+    Ok(())
+}
+
 impl ContainerFilters {
     /// 两个列表都空 = 不过滤（空过滤器不上线，见 [`WorkSpecSource::filters`]）。
     pub fn is_empty(&self) -> bool {
         self.namespace_in.is_empty() && self.pod_not_in.is_empty()
+    }
+
+    /// 这条来源**实际用到**的过滤器维度（空 = 不过滤）。
+    ///
+    /// 能力判定（[`missing_log_capabilities`]）与 agentd 的能力上报都从这里取：
+    /// 只写一遍字段 → 能力名的对应关系，少一处「新增一个过滤字段、忘了加进能力词表」的漏判。
+    pub fn used_dimensions(&self) -> Vec<&'static str> {
+        let mut used = Vec::new();
+        if !self.namespace_in.is_empty() {
+            used.push(FILTER_NAMESPACE_IN);
+        }
+        if !self.pod_not_in.is_empty() {
+            used.push(FILTER_POD_NOT_IN);
+        }
+        used
     }
 
     /// 形状校验：过滤器里的值是**精确名字**，不是 pattern。
@@ -405,18 +496,24 @@ pub const KERNEL_LOG_EXPORTER: &str = "journalctl-kernel";
 /// 已经被 [`is_executable_source`] 拦下，不需要第二套说法）。
 ///
 /// 返回值是「桶:值」（`file_inputs:glob` / `multiline_modes:indented` /
-/// `exporters:journalctl-kernel`），可以直接用在拒绝文案与自观测里。
+/// `filters:namespace_in` / `drop_if_contains:substring` / `exporters:journalctl-kernel`），
+/// 可以直接用在拒绝文案与自观测里。
+///
+/// 为什么收整条来源而不是拆成 `kind` / `target` / `multiline`：每加一个**选源/读法字段**
+/// （W2 的 `filters`、W4 的 `drop_if_contains`）都要重新讨论「要不要传」，而“忘了传”
+/// 在这里的后果是**整份 spec 被旧 agentd 拒收**（`deny_unknown_fields`），不是少采一条。
+/// 收整条来源，新增字段时编译器会直接把所有调用点指出来。
 ///
 /// 为什么把判定放契约：网关（派活时）与 agentd（上报时）必须用**同一份**词表。
 /// 两边各写一份的结果是「agent 说自己支持 glob、网关按一套旧名单判它不支持」——
 /// 而且这种矛盾只能靠人去两台机器上对日志才能发现。
 pub fn missing_log_capabilities(
-    kind: &str,
-    target: &str,
-    multiline: &str,
+    source: &WorkSpecSource,
     declared: &LogsCapabilities,
 ) -> Option<Vec<String>> {
     let declared_has = |bucket: &[String], value: &str| bucket.iter().any(|item| item == value);
+    let kind = source.kind.as_str();
+    let target = source.target.as_str();
 
     match kind {
         "FileGlob" => {
@@ -434,8 +531,25 @@ pub fn missing_log_capabilities(
                 missing.push(format!("file_inputs:{need}"));
             }
             // `none` 是老读法（一行一条），不算一项需要协商的能力。
-            if multiline != "none" && !declared_has(&declared.multiline_modes, multiline) {
-                missing.push(format!("multiline_modes:{multiline}"));
+            if source.multiline != "none"
+                && !declared_has(&declared.multiline_modes, &source.multiline)
+            {
+                missing.push(format!("multiline_modes:{}", source.multiline));
+            }
+            // 过滤器是**选源层**的能力（与读法正交）：旧 agentd 收到 `filters` 会拒收整份
+            // spec，所以逐维度点名。
+            for dimension in source.filters.used_dimensions() {
+                if !declared_has(&declared.filters, dimension) {
+                    missing.push(format!("filters:{dimension}"));
+                }
+            }
+            // 噪音行丢弃（W4）：同样是新字段，旧 agentd 会把整份 spec 当未知字段拒收。
+            // 注意：网关对这项**不裁源**，而是去掉字段降级（它是减法，少采不如多采）；
+            // 这里仍如实报告“缺这项能力”，供其它消费方与诊断使用。
+            if !source.drop_if_contains.is_empty()
+                && !declared_has(&declared.drop_if_contains, DROP_IF_CONTAINS_SUBSTRING)
+            {
+                missing.push(format!("drop_if_contains:{DROP_IF_CONTAINS_SUBSTRING}"));
             }
             Some(missing)
         }
@@ -459,7 +573,11 @@ pub const FILE_INPUT_ABSOLUTE_PATH: &str = "absolute-path";
 pub const FILE_INPUT_GLOB: &str = "glob";
 
 /// agentd 支持的 `multiline` 模式（与 [`WorkSpecSource::multiline`] 的取值同源）。
-pub const MULTILINE_MODES: &[&str] = &["none", "indented"];
+///
+/// * `none` / `indented`：W1；
+/// * `mysql_slow`：MySQL slow log，`# Time:` 起块（W4）；
+/// * `postgres_csv`：PostgreSQL csvlog，**引号外**的换行才切记录（W4）。
+pub const MULTILINE_MODES: &[&str] = &["none", "indented", "mysql_slow", "postgres_csv"];
 
 /// 定时导出器（`Exporter`）的**已知 ID**：协议层词表，网关 / agentd / web 三侧共用。
 ///
@@ -709,6 +827,36 @@ mod tests {
 
     // ── 能力协商（D7）：词表与判定同源 ──
 
+    /// 一条测试来源：只关心 kind / target / multiline 时用它（不带 filters / exclude）。
+    fn source(kind: &str, target: &str, multiline: &str) -> WorkSpecSource {
+        WorkSpecSource {
+            kind: kind.to_string(),
+            target: target.to_string(),
+            multiline: multiline.to_string(),
+            exclude_globs: Vec::new(),
+            filters: ContainerFilters::default(),
+            drop_if_contains: Vec::new(),
+        }
+    }
+
+    /// 一条容器来源（`FileGlob` + 给定过滤器）。
+    fn container_source(target: &str, filters: ContainerFilters) -> WorkSpecSource {
+        WorkSpecSource {
+            filters,
+            ..source("FileGlob", target, "none")
+        }
+    }
+
+    /// [`missing_log_capabilities`] 的简写：不带筛选条件的来源。
+    fn missing(
+        kind: &str,
+        target: &str,
+        multiline: &str,
+        declared: &LogsCapabilities,
+    ) -> Option<Vec<String>> {
+        missing_log_capabilities(&source(kind, target, multiline), declared)
+    }
+
     /// 一个“什么都支持”的 agent 声明（agentd 上报的就是这一份的全集）。
     fn full_logs() -> LogsCapabilities {
         LogsCapabilities {
@@ -721,6 +869,11 @@ mod tests {
                 .map(|mode| mode.to_string())
                 .collect(),
             exporters: EXPORTER_IDS.iter().map(|id| id.to_string()).collect(),
+            filters: CONTAINER_FILTERS.iter().map(|di| di.to_string()).collect(),
+            drop_if_contains: DROP_IF_CONTAINS_MODES
+                .iter()
+                .map(|m| m.to_string())
+                .collect(),
             ..LogsCapabilities::default()
         }
     }
@@ -733,27 +886,168 @@ mod tests {
             ..LogsCapabilities::default()
         };
         assert_eq!(
-            missing_log_capabilities("FileGlob", "/var/log/app.log", "none", &old_agent),
+            missing("FileGlob", "/var/log/app.log", "none", &old_agent),
             Some(Vec::new())
         );
         assert_eq!(
-            missing_log_capabilities("FileGlob", "/var/log/app/*.log", "none", &old_agent),
+            missing("FileGlob", "/var/log/app/*.log", "none", &old_agent),
             Some(vec!["file_inputs:glob".to_string()])
         );
         // 多行模式也是能力：说错了会把记录拼碎。
         assert_eq!(
-            missing_log_capabilities("FileGlob", "/var/log/a.log", "indented", &old_agent),
+            missing("FileGlob", "/var/log/a.log", "indented", &old_agent),
             Some(vec!["multiline_modes:indented".to_string()])
         );
         // 导出器是具名能力：新 ID（如 W3 的内核日志）旧 agent 一定不认识。
         assert_eq!(
-            missing_log_capabilities("Exporter", KERNEL_LOG_EXPORTER, "none", &old_agent),
+            missing("Exporter", KERNEL_LOG_EXPORTER, "none", &old_agent),
             Some(vec![format!("exporters:{KERNEL_LOG_EXPORTER}")])
         );
         // `arg` 不参与判定（与 `is_known_exporter` 同口径）。
         assert_eq!(
-            missing_log_capabilities("Exporter", "dmesg:panic", "none", &full_logs()),
+            missing("Exporter", "dmesg:panic", "none", &full_logs()),
             Some(Vec::new())
+        );
+        // 空的过滤器不要求任何能力：它不上线（`skip_serializing_if`）。
+        assert_eq!(
+            missing("FileGlob", "/var/log/containers/*.log", "none", &old_agent),
+            Some(vec!["file_inputs:glob".to_string()])
+        );
+    }
+
+    #[test]
+    fn container_filter_dimensions_are_negotiated_separately() {
+        // 0.9.4 的 agentd：已经有 glob / multiline / exporters，但**不认识 `filters`**。
+        // 带 filters 的来源必须被点名 —— 否则那份 spec 会被 `deny_unknown_fields` 整份拒收。
+        let before_w2 = LogsCapabilities {
+            filters: Vec::new(),
+            ..full_logs()
+        };
+        let namespace_only = ContainerFilters {
+            namespace_in: vec!["prod".to_string()],
+            pod_not_in: Vec::new(),
+        };
+        let target = "/var/log/containers/*.log";
+        assert_eq!(
+            missing_log_capabilities(&container_source(target, namespace_only), &before_w2),
+            Some(vec!["filters:namespace_in".to_string()])
+        );
+        // 两个维度都用到 → 两个都点名（按字段顺序，文案可对账）。
+        let both = ContainerFilters {
+            namespace_in: vec!["prod".to_string()],
+            pod_not_in: vec!["debug-pod".to_string()],
+        };
+        assert_eq!(
+            missing_log_capabilities(&container_source(target, both.clone()), &before_w2),
+            Some(vec![
+                "filters:namespace_in".to_string(),
+                "filters:pod_not_in".to_string(),
+            ])
+        );
+        // 声明了这两个维度就齐了。
+        assert_eq!(
+            missing_log_capabilities(&container_source(target, both), &full_logs()),
+            Some(Vec::new())
+        );
+        // 能力名就是过滤器的字段名（网关文案与目录写法能一一对上）。
+        assert_eq!(
+            ContainerFilters {
+                namespace_in: vec!["a".to_string()],
+                pod_not_in: vec!["b".to_string()],
+            }
+            .used_dimensions(),
+            vec![FILTER_NAMESPACE_IN, FILTER_POD_NOT_IN]
+        );
+        assert!(ContainerFilters::default().used_dimensions().is_empty());
+    }
+
+    #[test]
+    fn noise_drop_needles_are_a_capability_of_their_own() {
+        // W4 之前的 agentd：有 glob / filters，但**不认识 `drop_if_contains`**。
+        // 不点名就会把整份 spec 送给一个 `deny_unknown_fields` 的旧版本。
+        let before_w4 = LogsCapabilities {
+            drop_if_contains: Vec::new(),
+            ..full_logs()
+        };
+        let mut source = source("FileGlob", "/var/log/auth.log", "none");
+        source.drop_if_contains = vec!["pam_unix(cron:session)".to_string()];
+        assert_eq!(
+            missing_log_capabilities(&source, &before_w4),
+            Some(vec!["drop_if_contains:substring".to_string()])
+        );
+        // 声明了（本版只有子串一种）就齐了。
+        assert_eq!(
+            missing_log_capabilities(&source, &full_logs()),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn drop_if_contains_is_substring_shaped_and_stays_out_of_the_wire_when_empty() {
+        // 空列表不上线（与 `exclude_globs` / `filters` 同一条纪律）。
+        let mut source = source("FileGlob", "/var/log/auth.log", "none");
+        assert!(
+            !serde_json::to_string(&source)
+                .expect("serialize")
+                .contains("drop_if_contains")
+        );
+
+        source.drop_if_contains = vec!["pam_unix(cron:session)".to_string()];
+        let json = serde_json::to_string(&source).expect("serialize");
+        assert!(
+            json.contains(r#""drop_if_contains":["pam_unix(cron:session)"]"#),
+            "{json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<WorkSpecSource>(&json).expect("parse"),
+            source
+        );
+
+        // 形状校验：空串 / 首尾空白 / 控制字符 / 过长 / 太多 / 重复都要拒。
+        assert!(validate_drop_if_contains(&["ok".to_string()]).is_ok());
+        assert!(validate_drop_if_contains(&[]).is_ok());
+        for bad in ["", " x", "x ", "line\nbreak", " nul\0"] {
+            assert!(
+                validate_drop_if_contains(&[bad.to_string()]).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+        assert!(validate_drop_if_contains(&["x".repeat(DROP_IF_CONTAINS_MAX_BYTES + 1)]).is_err());
+        let too_many: Vec<String> = (0..=DROP_IF_CONTAINS_MAX_ITEMS)
+            .map(|i| format!("needle-{i}"))
+            .collect();
+        assert!(validate_drop_if_contains(&too_many).is_err());
+        assert!(validate_drop_if_contains(&["dup".to_string(), "dup".to_string()]).is_err());
+    }
+
+    #[test]
+    fn the_new_multiline_modes_are_in_the_contract_vocabulary() {
+        // 网关装载期与 agentd 配置校验都看这份词表：漏一项，目录里写了也会被当成非法。
+        for mode in ["mysql_slow", "postgres_csv"] {
+            assert!(MULTILINE_MODES.contains(&mode), "{mode}");
+        }
+        // 新读法一律要求能力声明（`none` 除外）。
+        let old_agent = LogsCapabilities {
+            multiline_modes: vec!["none".to_string(), "indented".to_string()],
+            ..full_logs()
+        };
+        assert_eq!(
+            missing(
+                "FileGlob",
+                "/var/log/postgresql/x.csv",
+                "postgres_csv",
+                &old_agent
+            ),
+            Some(vec!["multiline_modes:postgres_csv".to_string()])
+        );
+        assert_eq!(
+            missing(
+                "FileGlob",
+                "/var/log/mysql/slow.log",
+                "mysql_slow",
+                &old_agent
+            ),
+            Some(vec!["multiline_modes:mysql_slow".to_string()])
         );
     }
 
@@ -762,12 +1056,12 @@ mod tests {
         // 写错 ID / 未来 ID 遇到旧 agent：都是“没声明这个能力”，不能当成“不归我管”放过 ——
         // 放过的后果是派下去、agent 回 unsupported。
         assert_eq!(
-            missing_log_capabilities("Exporter", "journalctl-kernelx", "none", &full_logs()),
+            missing("Exporter", "journalctl-kernelx", "none", &full_logs()),
             Some(vec!["exporters:journalctl-kernelx".to_string()])
         );
         // 带 `arg` 也一样：只按 ID 判。
         assert_eq!(
-            missing_log_capabilities("Exporter", "dmesg:panic", "none", &old_style_logs()),
+            missing("Exporter", "dmesg:panic", "none", &old_style_logs()),
             Some(vec!["exporters:dmesg".to_string()])
         );
     }
@@ -784,16 +1078,10 @@ mod tests {
     #[test]
     fn capability_checks_say_nothing_about_things_they_do_not_own() {
         // 指标不走 logs 能力；不可执行的形态由 `is_executable_source` 说，不重复扣帽子。
+        assert_eq!(missing("MetricInterval", "15s", "none", &full_logs()), None);
+        assert_eq!(missing("FileGlob", "~/a/*.log", "none", &full_logs()), None);
         assert_eq!(
-            missing_log_capabilities("MetricInterval", "15s", "none", &full_logs()),
-            None
-        );
-        assert_eq!(
-            missing_log_capabilities("FileGlob", "~/a/*.log", "none", &full_logs()),
-            None
-        );
-        assert_eq!(
-            missing_log_capabilities("UnifiedLogPredicate", "syspolicyd", "none", &full_logs()),
+            missing("UnifiedLogPredicate", "syspolicyd", "none", &full_logs()),
             None
         );
     }
@@ -801,29 +1089,46 @@ mod tests {
     #[test]
     fn a_fully_declared_agent_is_missing_nothing_the_contract_calls_executable() {
         // 防漂：契约说“能执行”的每一种形态，声明了全集就必须不报缺。
-        // 新增一个导出器 ID / 一种 multiline 模式而忘了加到常量里，这条会红。
+        // 新增一个导出器 ID / 一种 multiline 模式 / 一个过滤维度而忘了加到常量里，这条会红。
         let full = full_logs();
         for target in ["/var/log/a.log", "/var/log/containers/*.log"] {
             assert_eq!(
-                missing_log_capabilities("FileGlob", target, "none", &full),
+                missing("FileGlob", target, "none", &full),
                 Some(Vec::new()),
                 "{target}"
             );
         }
         for mode in MULTILINE_MODES {
             assert_eq!(
-                missing_log_capabilities("FileGlob", "/var/log/a.log", mode, &full),
+                missing("FileGlob", "/var/log/a.log", mode, &full),
                 Some(Vec::new()),
                 "{mode}"
             );
         }
         for id in EXPORTER_IDS {
             assert_eq!(
-                missing_log_capabilities("Exporter", id, "none", &full),
+                missing("Exporter", id, "none", &full),
                 Some(Vec::new()),
                 "{id}"
             );
         }
+        // 每一个过滤维度都真的能“声明全了就不报缺”。
+        let filters = ContainerFilters {
+            namespace_in: vec!["prod".to_string()],
+            pod_not_in: vec!["debug-pod".to_string()],
+        };
+        assert_eq!(
+            filters.used_dimensions(),
+            CONTAINER_FILTERS,
+            "`used_dimensions` 与 `CONTAINER_FILTERS` 漂了"
+        );
+        assert_eq!(
+            missing_log_capabilities(
+                &container_source("/var/log/containers/*.log", filters),
+                &full
+            ),
+            Some(Vec::new())
+        );
     }
 
     // ── 工作参数（`spec`）的编码 ──
@@ -842,6 +1147,7 @@ mod tests {
                         multiline: "none".to_string(),
                         exclude_globs: Vec::new(),
                         filters: ContainerFilters::default(),
+                        drop_if_contains: Vec::new(),
                     }],
                 },
                 WorkSpecUnit {
@@ -856,6 +1162,7 @@ mod tests {
                             multiline: "none".to_string(),
                             exclude_globs: Vec::new(),
                             filters: ContainerFilters::default(),
+                            drop_if_contains: Vec::new(),
                         },
                         WorkSpecSource {
                             kind: "FileGlob".to_string(),
@@ -865,6 +1172,7 @@ mod tests {
                             multiline: "indented".to_string(),
                             exclude_globs: Vec::new(),
                             filters: ContainerFilters::default(),
+                            drop_if_contains: Vec::new(),
                         },
                     ],
                 },
@@ -904,6 +1212,7 @@ mod tests {
                 multiline: "none".to_string(),
                 exclude_globs: vec!["/var/log/containers/*_kube-system_*.log".to_string()],
                 filters: ContainerFilters::default(),
+                drop_if_contains: Vec::new(),
             }],
         };
         assert_eq!(unit.file_sources().len(), 1, "它是一条文件来源");
@@ -924,6 +1233,7 @@ mod tests {
             multiline: "none".to_string(),
             exclude_globs: Vec::new(),
             filters: ContainerFilters::default(),
+            drop_if_contains: Vec::new(),
         };
         // 空排除项不进 JSON：旧 agent 的 `WorkSpecSource` 是 `deny_unknown_fields` 的。
         assert_eq!(
@@ -953,6 +1263,7 @@ mod tests {
             multiline: "none".to_string(),
             exclude_globs: Vec::new(),
             filters: ContainerFilters::default(),
+            drop_if_contains: Vec::new(),
         };
         // 空过滤器不进 JSON（与 exclude_globs 同一条纪律：旧 agent 是 deny_unknown_fields）。
         let json = serde_json::to_string(&source).expect("serialize");
@@ -992,6 +1303,7 @@ mod tests {
                 namespace_in: Vec::new(),
                 pod_not_in: Vec::new(),
             },
+            drop_if_contains: Vec::new(),
         };
         let json = serde_json::to_string(&source).expect("serialize");
         assert!(!json.contains("filters"), "{json}");
@@ -1106,6 +1418,7 @@ mod tests {
                 multiline: "none".to_string(),
                 exclude_globs: Vec::new(),
                 filters: ContainerFilters::default(),
+                drop_if_contains: Vec::new(),
             }],
         };
         let mixed = WorkSpec {

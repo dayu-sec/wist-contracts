@@ -17,15 +17,31 @@
 //!
 //! ## 摘要版本前缀
 //!
-//! 前缀 `fact-v2` 表达的是**规范化算法/字段集的版本**。改字段集（例如以后纳入容器或
+//! 前缀表达的是**规范化算法/字段集的版本**。改字段集（例如以后纳入容器或
 //! 资源画像）时必须 bump 它 —— 否则新旧两侧对同一台机器会给出不同的「没变」，
 //! 而这个差异是静默的。带上前缀后，版本切换会强制一次重报，而不是静默错判。
+//!
+//! 演进记录：
+//! - `fact-v2`：纳入 `probed_paths` / `present_paths`（路径存在性影响派活）。
+//! - `fact-v3`：`listen_ports` 只报**稳定服务端口**且带协议前缀（`tcp:5432`），
+//!   滤掉内核临时端口区间；进程清单不再含内核线程。这两类原信号会随无关进程
+//!   生灭而抖动，等于让幂等键失效（实测一台机器 246 个监听里 220 个是噪声）。
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// 规范化算法 / 字段集的版本（见模块注释）。
-pub const FACT_DIGEST_VERSION: &str = "fact-v2";
+pub const FACT_DIGEST_VERSION: &str = "fact-v3";
+
+/// 内核临时端口区间的下界（Linux `net.ipv4.ip_local_port_range` 的默认起点）。
+///
+/// [`FactContent::listen_ports`] **刻意不含**这个区间里的监听：它们是客户端 socket、
+/// 端口复用池与端口转发的副产物，会随无关进程生灭换号（实测一台机器 246 个监听中 220 个是这类）。
+///
+/// 两侧必须共用同一个值：agentd 用它决定「哪些监听不上报」，网关用它把
+/// 「没监听」（`No`）× 「这个区间没采」（`Unknown`）分开 —— 各写一份的话，
+/// 同一条事实会在两侧得出不同的三态结论。
+pub const EPHEMERAL_PORT_START: u16 = 32768;
 
 /// 事实的**内容**部分（判据、幂等键的输入）。
 ///
@@ -38,6 +54,11 @@ pub struct FactContent {
     pub arch: String,
     pub process_executables: Vec<String>,
     pub packages: Vec<String>,
+    /// 稳定的服务端口，形如 `<proto>:<port>`（`tcp:5432`）。
+    ///
+    /// 内核临时端口区间（[`EPHEMERAL_PORT_START`] 起）的监听不进这里：它们是客户端 socket、
+    /// 端口复用池与端口转发的副产物，既推不出用途，还会随进程生灭而变。
+    /// 回环上的端口**不是**过滤依据：只绑本地的数据库 / 开发服务同样是「在跑什么」的判据。
     pub listen_ports: Vec<String>,
     /// 网关下发、本机**实际探测过**的路径（白名单）。
     ///
@@ -70,7 +91,7 @@ impl FactContent {
         }
     }
 
-    /// 内容摘要（形如 `fact-v2:sha256:<hex>`）。
+    /// 内容摘要（形如 `fact-v3:sha256:<hex>`）。
     ///
     /// 归一化（去重 + 定序）放在**这个函数内部**，而不是只靠调用方：
     /// 不变式要由主张它的函数来守 —— 否则调用方传进来的顺序或重复项一变，
@@ -133,8 +154,8 @@ mod tests {
     #[test]
     fn digest_is_stable_and_versioned() {
         let digest = content(&["/usr/bin/xcodebuild"]).content_digest();
-        assert!(digest.starts_with("fact-v2:sha256:"), "{digest}");
-        assert_eq!(digest.len(), "fact-v2:sha256:".len() + 64);
+        assert!(digest.starts_with("fact-v3:sha256:"), "{digest}");
+        assert_eq!(digest.len(), "fact-v3:sha256:".len() + 64);
         // 同一内容重复计算必须一致（否则幂等键本身就不成立）。
         assert_eq!(digest, content(&["/usr/bin/xcodebuild"]).content_digest());
     }
@@ -284,8 +305,8 @@ mod tests {
             Vec::new(),
         )
         .content_digest();
-        assert!(digest.starts_with("fact-v2:sha256:"));
-        assert_eq!(digest.len(), "fact-v2:sha256:".len() + 64);
+        assert!(digest.starts_with("fact-v3:sha256:"));
+        assert_eq!(digest.len(), "fact-v3:sha256:".len() + 64);
         assert_eq!(
             digest,
             FactContent::new(
