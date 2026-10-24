@@ -3,6 +3,25 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.8] - 2026-10-24
+
+### 新增
+
+- **`work::is_container_log_target(target)`**：容器日志来源的**形状判据**（k8s 与 Docker 共用）。
+  判据只要求路径里有一个 `containers` 段 —— Docker 可以改 `--data-root`，写死 `/var/lib/docker`
+  会误拒现场；同时接受目录形态（`…/containers`），不再把显式目录来源错拒。
+  网关装载校验与 agentd 本机配置校验共用这一份，避免两处口径漂移。
+
+### 文档 / 测试
+
+- `ContainerFilters` 补上**组合语义**：维度内 OR、维度间 AND，`*_not_in` 命中即不收，
+  同值同时出现在 `name_in` / `name_not_in` 时排除优先。
+- 订正 `name_not_in` 的注释：排除式**不**要求“证明确实是它”（之前写反了）。
+- `CONTAINER_FILTERS` 的措辞从“agentd 能承接的全部”改为“协议定义的词表” ——
+  上报方必须**显式**列维度，不能直接抄这个常量（否则“契约加了一维”会自动变成“我也支持”）。
+- 新增表驱动测试：只填一维时，`is_empty` / 序列化键名 / `used_dimensions()` 三者必须同时
+  只反映该维；四维全空时整体不序列化。`validate` 改用 `FILTER_*` 常量，不再手抄字段名。
+
 ## [0.9.7] - 2026-10-24
 
 ### 新增（容器名过滤）

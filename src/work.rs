@@ -268,12 +268,17 @@ pub const CONTAINER_LOG_ROOT: &str = "/var/log/containers";
 
 /// 容器选源的结构化过滤器（默认全空 = 不过滤）。
 ///
-/// 为什么不是「再写几条 pattern」：容器日志文件名本身就是
-/// `<pod>_<namespace>_<container>-<id>.log`，选源要用的三个维度全在里面；把 namespace
-/// 白名单散成 N 条 path pattern 会随集群漂移，而过滤器是**结构化**的、与文件名格式解耦。
+/// 为什么不是「再写几条 pattern」：k8s 的容器日志文件名本身就是
+/// `<pod>_<namespace>_<container>-<id>.log`，选源要用的三个维度全在里面；纯 Docker 载体
+/// 只有 id，名字/镜像要读同目录的 `config.v2.json`。把 namespace 白名单散成 N 条 path
+/// pattern 会随集群漂移，而过滤器是**结构化**的、与文件名格式解耦。
 ///
 /// 求值位置：**发现阶段**（agentd 展开 glob、剔完 `exclude_globs` 之后，读之前），
 /// 读取器不参与 —— 所以它不影响 tail / checkpoint / 轮转语义。
+///
+/// 组合语义（四个维度之间）：维度**内**是 OR，维度**间**是 AND；
+/// `*_not_in` 是排除（命中即不收），`*_in` 是包含（不在名单里就不收）。
+/// 同一个值同时出现在 `name_in` 与 `name_not_in` 时，**排除优先**（结果为空集）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerFilters {
@@ -294,7 +299,8 @@ pub struct ContainerFilters {
     pub name_in: Vec<String>,
     /// 这些容器名不采（空 = 不排除）。
     ///
-    /// 与 [`Self::name_in`] 相反：取不到身份的候选**保留**（排除式过滤要求“证明确实是它”）。
+    /// 与 [`Self::name_in`] 相反：取不到身份的候选**保留** —— 排除式只负责“确实是你时才剔”，
+    /// 读不到身份不等于“就是它”，丢掉只会静默少采。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub name_not_in: Vec<String>,
 }
@@ -311,7 +317,10 @@ pub const FILTER_NAME_IN: &str = "name_in";
 /// 这些容器名不采。
 pub const FILTER_NAME_NOT_IN: &str = "name_not_in";
 
-/// agentd 能承接的**全部**容器过滤维度（与 [`ContainerFilters::used_dimensions`] 同源）。
+/// 协议里**定义**的全部容器过滤维度（与 [`ContainerFilters::used_dimensions`] 同源）。
+///
+/// 这是**词表**，不是“实现了的清单”：agentd 上报自己支持的维度时必须**显式**列出，
+/// 不能直接抄这个常量——否则“契约加了一维”会自动变成“我也支持”（见各 agent 的上报点）。
 ///
 /// 新增一个过滤维度时：先在 [`ContainerFilters`] 里加字段，再往这里加名字 ——
 /// 两侧对不上的漂移由 `a_fully_declared_agent_is_missing_nothing_the_contract_calls_executable` 钉住。
@@ -406,10 +415,10 @@ impl ContainerFilters {
     /// 名字是否真存在由集群决定，不是配置校验能回答的。
     pub fn validate(&self) -> Result<(), String> {
         for (field, values) in [
-            ("namespace_in", &self.namespace_in),
-            ("pod_not_in", &self.pod_not_in),
-            ("name_in", &self.name_in),
-            ("name_not_in", &self.name_not_in),
+            (FILTER_NAMESPACE_IN, &self.namespace_in),
+            (FILTER_POD_NOT_IN, &self.pod_not_in),
+            (FILTER_NAME_IN, &self.name_in),
+            (FILTER_NAME_NOT_IN, &self.name_not_in),
         ] {
             for value in values {
                 if value.trim().is_empty() {
@@ -512,6 +521,18 @@ pub fn is_glob_path(target: &str) -> bool {
 /// 就换一个采集对象，那不是「配置」，是运气。
 pub fn is_file_target(target: &str) -> bool {
     is_explicit_path(target) || is_glob_path(target)
+}
+
+/// 这个目标是不是**容器日志来源**的形状（k8s 与 Docker 两种载体共用）。
+///
+/// 判据刻意只要求“路径里有一个 `containers` 段”：
+/// * k8s 载体是 `/var/log/containers`（[`CONTAINER_LOG_ROOT`]）；
+/// * Docker 载体的根目录可以被 `--data-root` 改掉，写死 `/var/lib/docker` 会误拒现场。
+///
+/// 代价是同名目录（`/srv/containers/*.log`）也会被认成容器来源 —— 这一层只能靠现场，
+/// 装载期不做“猜”。本函数只拦相对路径与完全不像的路径。
+pub fn is_container_log_target(target: &str) -> bool {
+    target.starts_with('/') && target.split('/').any(|segment| segment == "containers")
 }
 
 /// 内核日志导出器（W3）：`journalctl -k -p 4 -o json`，**靠游标续读**。
@@ -1173,6 +1194,71 @@ mod tests {
                 &full
             ),
             Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn every_filter_dimension_alone_pins_is_empty_serialization_and_capability_name() {
+        // 一条测试同时钉住三处最容易被新增维度漏掉的同源：
+        //   1. `is_empty`（= `skip_serializing_if` 的判据）—— 漏了会让整个 `filters` 被静默丢掉，
+        //      来源按“全收”执行（策略被无声撤销）；
+        //   2. serde 键名（报文里的字段名）；
+        //   3. `used_dimensions()`（网关裁源用的能力名）。
+        // 只填一维时，三者必须都只反映这一维。
+        let cases: [(ContainerFilters, &'static str); 4] = [
+            (
+                ContainerFilters {
+                    namespace_in: vec!["prod".to_string()],
+                    ..Default::default()
+                },
+                FILTER_NAMESPACE_IN,
+            ),
+            (
+                ContainerFilters {
+                    pod_not_in: vec!["debug-pod".to_string()],
+                    ..Default::default()
+                },
+                FILTER_POD_NOT_IN,
+            ),
+            (
+                ContainerFilters {
+                    name_in: vec!["mysql".to_string()],
+                    ..Default::default()
+                },
+                FILTER_NAME_IN,
+            ),
+            (
+                ContainerFilters {
+                    name_not_in: vec!["fluent-bit".to_string()],
+                    ..Default::default()
+                },
+                FILTER_NAME_NOT_IN,
+            ),
+        ];
+        for (filters, dimension) in cases {
+            assert!(
+                !filters.is_empty(),
+                "{dimension} 非空时 is_empty 必须为 false"
+            );
+            assert_eq!(filters.used_dimensions(), vec![dimension], "{dimension}");
+            let json = serde_json::to_value(&filters).expect("serialize");
+            let object = json.as_object().expect("object");
+            assert_eq!(
+                object.keys().map(String::as_str).collect::<Vec<_>>(),
+                vec![dimension],
+                "{dimension}：序列化键名必须与能力名逐字一致"
+            );
+            assert_eq!(
+                object[dimension].as_array().map(Vec::len),
+                Some(1),
+                "{dimension}：该维的值要完整发出去"
+            );
+        }
+        // 全空 = 整个字段不出现（旧 agent 的 `deny_unknown_fields` 靠这个不被惊动）。
+        assert!(ContainerFilters::default().is_empty());
+        assert_eq!(
+            serde_json::to_value(ContainerFilters::default()).expect("serialize"),
+            serde_json::json!({})
         );
     }
 
