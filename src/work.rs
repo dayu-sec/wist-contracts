@@ -283,6 +283,20 @@ pub struct ContainerFilters {
     /// 这些 pod 不采（空 = 不排除）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pod_not_in: Vec<String>,
+    /// 只采这些**容器名**（空 = 不限）。
+    ///
+    /// 两类载体上的含义：
+    /// - k8s（`<pod>_<ns>_<container>-<id>.log`）：文件名里的 `<container>` 段；
+    /// - 纯 Docker（`<root>/containers/<id>/<id>-json.log`）：文件名里**没有名字**，
+    ///   由采集端从同目录的 `config.v2.json` 取（与帧上的 `container.name` 同源）。
+    ///   取不到身份的候选**不算命中**（包含式过滤要求“证明确实是它”）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub name_in: Vec<String>,
+    /// 这些容器名不采（空 = 不排除）。
+    ///
+    /// 与 [`Self::name_in`] 相反：取不到身份的候选**保留**（排除式过滤要求“证明确实是它”）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub name_not_in: Vec<String>,
 }
 
 /// 容器过滤器的维度名（**能力词表**的值）：与 [`ContainerFilters`] 的字段同名。
@@ -292,12 +306,21 @@ pub struct ContainerFilters {
 pub const FILTER_NAMESPACE_IN: &str = "namespace_in";
 /// 见 [`FILTER_NAMESPACE_IN`]。
 pub const FILTER_POD_NOT_IN: &str = "pod_not_in";
+/// 只采这些容器名（Docker 载体靠 `config.v2.json` 取名）。
+pub const FILTER_NAME_IN: &str = "name_in";
+/// 这些容器名不采。
+pub const FILTER_NAME_NOT_IN: &str = "name_not_in";
 
 /// agentd 能承接的**全部**容器过滤维度（与 [`ContainerFilters::used_dimensions`] 同源）。
 ///
 /// 新增一个过滤维度时：先在 [`ContainerFilters`] 里加字段，再往这里加名字 ——
 /// 两侧对不上的漂移由 `a_fully_declared_agent_is_missing_nothing_the_contract_calls_executable` 钉住。
-pub const CONTAINER_FILTERS: &[&str] = &[FILTER_NAMESPACE_IN, FILTER_POD_NOT_IN];
+pub const CONTAINER_FILTERS: &[&str] = &[
+    FILTER_NAMESPACE_IN,
+    FILTER_POD_NOT_IN,
+    FILTER_NAME_IN,
+    FILTER_NAME_NOT_IN,
+];
 
 /// 噪音行丢弃的**求值方式**（能力词表的值）。
 ///
@@ -347,9 +370,12 @@ pub fn validate_drop_if_contains(needles: &[String]) -> Result<(), String> {
 }
 
 impl ContainerFilters {
-    /// 两个列表都空 = 不过滤（空过滤器不上线，见 [`WorkSpecSource::filters`]）。
+    /// 四个列表都空 = 不过滤（空过滤器不上线，见 [`WorkSpecSource::filters`]）。
     pub fn is_empty(&self) -> bool {
-        self.namespace_in.is_empty() && self.pod_not_in.is_empty()
+        self.namespace_in.is_empty()
+            && self.pod_not_in.is_empty()
+            && self.name_in.is_empty()
+            && self.name_not_in.is_empty()
     }
 
     /// 这条来源**实际用到**的过滤器维度（空 = 不过滤）。
@@ -364,6 +390,12 @@ impl ContainerFilters {
         if !self.pod_not_in.is_empty() {
             used.push(FILTER_POD_NOT_IN);
         }
+        if !self.name_in.is_empty() {
+            used.push(FILTER_NAME_IN);
+        }
+        if !self.name_not_in.is_empty() {
+            used.push(FILTER_NAME_NOT_IN);
+        }
         used
     }
 
@@ -376,6 +408,8 @@ impl ContainerFilters {
         for (field, values) in [
             ("namespace_in", &self.namespace_in),
             ("pod_not_in", &self.pod_not_in),
+            ("name_in", &self.name_in),
+            ("name_not_in", &self.name_not_in),
         ] {
             for value in values {
                 if value.trim().is_empty() {
@@ -926,6 +960,9 @@ mod tests {
         let namespace_only = ContainerFilters {
             namespace_in: vec!["prod".to_string()],
             pod_not_in: Vec::new(),
+
+            name_in: Vec::new(),
+            name_not_in: Vec::new(),
         };
         let target = "/var/log/containers/*.log";
         assert_eq!(
@@ -936,6 +973,9 @@ mod tests {
         let both = ContainerFilters {
             namespace_in: vec!["prod".to_string()],
             pod_not_in: vec!["debug-pod".to_string()],
+
+            name_in: Vec::new(),
+            name_not_in: Vec::new(),
         };
         assert_eq!(
             missing_log_capabilities(&container_source(target, both.clone()), &before_w2),
@@ -954,6 +994,9 @@ mod tests {
             ContainerFilters {
                 namespace_in: vec!["a".to_string()],
                 pod_not_in: vec!["b".to_string()],
+
+                name_in: Vec::new(),
+                name_not_in: Vec::new(),
             }
             .used_dimensions(),
             vec![FILTER_NAMESPACE_IN, FILTER_POD_NOT_IN]
@@ -1116,6 +1159,8 @@ mod tests {
         let filters = ContainerFilters {
             namespace_in: vec!["prod".to_string()],
             pod_not_in: vec!["debug-pod".to_string()],
+            name_in: vec!["mysql".to_string()],
+            name_not_in: vec!["fluent-bit".to_string()],
         };
         assert_eq!(
             filters.used_dimensions(),
@@ -1272,6 +1317,9 @@ mod tests {
         source.filters = ContainerFilters {
             namespace_in: vec!["prod".to_string()],
             pod_not_in: vec!["debug-pod".to_string()],
+
+            name_in: Vec::new(),
+            name_not_in: Vec::new(),
         };
         let json = serde_json::to_string(&source).expect("serialize");
         assert!(
@@ -1302,11 +1350,49 @@ mod tests {
             filters: ContainerFilters {
                 namespace_in: Vec::new(),
                 pod_not_in: Vec::new(),
+
+                name_in: Vec::new(),
+                name_not_in: Vec::new(),
             },
             drop_if_contains: Vec::new(),
         };
         let json = serde_json::to_string(&source).expect("serialize");
         assert!(!json.contains("filters"), "{json}");
+    }
+
+    #[test]
+    fn name_filters_are_a_capability_of_their_own() {
+        // Docker 载体上的容器名过滤（文件名里只有容器 id）：单独两个能力维度。
+        // 旧 agentd 不声明 → 网关裁掉带该过滤的来源，而不是整份拒收。
+        let include = ContainerFilters {
+            name_in: vec!["mysql".to_string()],
+            ..ContainerFilters::default()
+        };
+        assert_eq!(include.used_dimensions(), vec![FILTER_NAME_IN]);
+        let exclude = ContainerFilters {
+            name_not_in: vec!["fluent-bit".to_string()],
+            ..ContainerFilters::default()
+        };
+        assert_eq!(exclude.used_dimensions(), vec![FILTER_NAME_NOT_IN]);
+
+        // 值是**精确名字**：通配符/空串在装载期就要拦下。
+        assert!(
+            ContainerFilters {
+                name_in: vec!["mysql*".to_string()],
+                ..ContainerFilters::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ContainerFilters {
+                name_not_in: vec![" ".to_string()],
+                ..ContainerFilters::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(include.validate().is_ok());
     }
 
     #[test]
@@ -1316,6 +1402,9 @@ mod tests {
         let filters = ContainerFilters {
             namespace_in: vec!["Prod".to_string()],
             pod_not_in: vec!["debug-pod".to_string()],
+
+            name_in: Vec::new(),
+            name_not_in: Vec::new(),
         };
         let json = serde_json::to_string(&filters).expect("serialize");
         let parsed: ContainerFilters = serde_json::from_str(&json).expect("parse");
@@ -1336,6 +1425,9 @@ mod tests {
         let ok = |namespace: &[&str], pods: &[&str]| ContainerFilters {
             namespace_in: namespace.iter().map(|v| v.to_string()).collect(),
             pod_not_in: pods.iter().map(|v| v.to_string()).collect(),
+
+            name_in: Vec::new(),
+            name_not_in: Vec::new(),
         };
 
         assert!(

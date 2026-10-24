@@ -3,6 +3,23 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.7] - 2026-10-24
+
+### 新增（容器名过滤）
+
+- **`ContainerFilters.name_in` / `name_not_in`**：按**容器名**选源 / 排除。
+
+  两类载体上的含义：
+  - k8s（`<pod>_<ns>_<container>-<id>.log`）：文件名里的 `<container>` 段；
+  - 纯 Docker（`<root>/containers/<id>/<id>-json.log`）：文件名里**没有名字**，
+    由采集端从同目录的 `config.v2.json` 取（与帧上的 `container.name` 同源）。
+
+  能力轴自动扩展为 `filters:name_in` / `filters:name_not_in`：旧 agentd 不声明时，
+  网关**裁掉带该过滤的来源**（而不是整份拒收）。
+
+  语义细节（两端同一口径）：**包含式**过滤要求“证明确实是它”——取不到身份就不命中；
+  **排除式**相反——取不到身份就**保留**（宁可多采，不静默丢）。
+
 ## [0.9.6] - 2026-10-24
 
 ### 新增（容器身份进帧）
