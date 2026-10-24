@@ -3,6 +3,25 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.6] - 2026-10-24
+
+### 新增（容器身份进帧）
+
+- **`ContainerRef { name, image, id }`**，以及 `TelemetryRecord.container` /
+  `DataFrame.container`（可选；**空则不出现在帧里**）。
+
+  为什么需要：纯 Docker 主机的容器日志在文件名里只有容器 id，名字与镜像只存在于同目录的
+  `config.v2.json`。不带它，数据面只能看到一串十六进制，无法把记录分派到具体的
+  业务 / 网关 / 数据库容器（k8s 侧这个信息编码在文件名里，Docker 侧没有）。
+
+  加性字段：旧 spool / 旧帧没有它 → `None`；本机手工输入也没有。不改既有字段语义，
+  也不需要新能力轴（网关不下发它；数据面读不到就按“不知道哪个容器”处理）。
+
+### 验证
+
+- 真实数据面（`wparse` + `agent_uplink` 模型）实测：帧信封多出 `container` 键时仍正常解析
+  （正文完整落盘，不落 miss）—— 加字段不会伤害旧数据面的解析。
+
 ## [0.9.5] - 2026-10-24
 
 ### 新增（G1 能力轴 + G3 记录边界）

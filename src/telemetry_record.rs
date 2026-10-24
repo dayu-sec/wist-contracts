@@ -33,6 +33,27 @@ pub struct TelemetryRecord {
     /// 旧数据无此字段时反序列化为 0。
     #[serde(default)]
     pub seq: u64,
+    /// 容器来源（仅**纯 Docker 主机**的容器日志有值）：从同目录 `config.v2.json` 读。
+    ///
+    /// 为什么要有它：k8s 侧的 pod/ns/container 编码在**文件名**里，而 Docker 侧文件名只有
+    /// 容器 id —— 不把名字带上，数据面就只能看到一串 64 位十六进制。
+    /// **加性字段**：旧 spool / 旧帧没有它，解成 `None`；本机手工输入也没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerRef>,
+}
+
+/// 记录来自哪个容器。只收**事实**（名字 / 镜像 / id），不收标签全集。
+///
+/// `name` 是 Docker 的 `Name`（去掉前导 `/`，如 `mysql`）；`image` 是 `Config.Image`
+/// 原样（如 `bitnami/mysql:8.0`）；`id` 是容器目录名（容器重建会变，名字不变）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerRef {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub id: String,
 }
 
 impl TelemetryRecord {
@@ -59,7 +80,18 @@ impl TelemetryRecord {
             file_offset,
             file_offset_end,
             seq,
+            container: None,
         }
+    }
+
+    /// 带上容器身份（仅纯 Docker 主机的容器日志）：它会让数据面能把记录分派到具体的
+    /// 业务 / 网关 / 数据库容器，而不是一锅端。
+    ///
+    /// 用链式而不是给 `new_log` 再加参数：那里已经 8 个位置参数，而且这个字段
+    /// 大多数来源根本没有。
+    pub fn with_container(mut self, container: Option<ContainerRef>) -> Self {
+        self.container = container;
+        self
     }
 
     /// 带上**来源身份**（采集面 + 目录单元）：会进数据帧，用于「这条来自哪个面」。
@@ -95,6 +127,10 @@ pub struct DataFrame {
     pub family: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub unit: String,
+    /// 容器身份（可选，见 [`ContainerRef`]。空则**不出现在帧里**——与 `family`/`unit`
+    /// 同口径：手工输入与旧帧的字节不变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerRef>,
 }
 
 impl From<&TelemetryRecord> for DataFrame {
@@ -106,6 +142,7 @@ impl From<&TelemetryRecord> for DataFrame {
             seq: record.seq,
             family: record.family.clone(),
             unit: record.unit.clone(),
+            container: record.container.clone(),
         }
     }
 }
@@ -122,13 +159,14 @@ impl DataFrame {
             seq,
             family: String::new(),
             unit: String::new(),
+            container: None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DataFrame, TelemetryRecord};
+    use super::{ContainerRef, DataFrame, TelemetryRecord};
 
     fn record() -> TelemetryRecord {
         TelemetryRecord::new_log(
@@ -206,6 +244,38 @@ mod tests {
         assert_eq!(frame.seq, record.seq);
         assert_eq!(frame.family, "NetworkFirewall");
         assert_eq!(frame.unit, "mac-network-wifi");
+    }
+
+    #[test]
+    fn container_identity_round_trips_and_stays_out_of_the_frame_when_absent() {
+        let plain = record();
+        assert!(
+            !serde_json::to_string(&DataFrame::from(&plain))
+                .expect("serialize")
+                .contains("container"),
+            "没有容器身份时不应该多出一个键"
+        );
+
+        let tagged = record().with_container(Some(ContainerRef {
+            name: "mysql".to_string(),
+            image: "bitnami/mysql:8.0".to_string(),
+            id: "0123456789abcdef".to_string(),
+        }));
+        let json = serde_json::to_string(&DataFrame::from(&tagged)).expect("serialize");
+        assert!(json.contains(r#""container":{"name":"mysql","image":"bitnami/mysql:8.0","id":"0123456789abcdef"}"#), "{json}");
+
+        // spool 里的记录也要能读回来（重启重放场景）。
+        let back: TelemetryRecord =
+            serde_json::from_str(&serde_json::to_string(&tagged).expect("serialize record"))
+                .expect("deserialize");
+        assert_eq!(back.container, tagged.container);
+
+        // 旧帧 / 旧 spool 没有这个键：解成 `None`，不能报错。
+        let old: TelemetryRecord = serde_json::from_str(
+            r#"{"schema_version":"v1","agent_id":"a","observed_at":"t","input_id":"i","source_path":"p","body":"b","file_offset":0,"file_offset_end":1,"seq":0}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(old.container, None);
     }
 
     #[test]
