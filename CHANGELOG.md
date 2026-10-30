@@ -3,6 +3,22 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.9] - 2026-10-30
+
+### 新增
+
+- **`capability_report::InvestigationCapabilities`**（调查能力）：`surfaces`（本机真实现的调查面）
+  + `privileged`（是否 root/系统服务运行，决定同一道题给“完整答案”还是“部分答案”）。
+  与 `LogsCapabilities` 同一条纪律：网关据此**在入队前**判断能不能做，而不是发下去换一个
+  `unsupported`。
+
+### 文档 / 测试
+
+- 说明**为什么单开一个桶**而不并进 `LogsCapabilities`：调查面与采集面是两条授权轴
+  （见 `doc/design/center/investigation-surfaces.md`），“能不能采这类事件”与“能不能查这个
+  问题”不能互相冒充。
+- 新增测试：空对象可解（旧 agent / 最小报文）、往返稳定、字段拼错要响。
+
 ## [0.9.8] - 2026-10-24
 
 ### 新增

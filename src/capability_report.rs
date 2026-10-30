@@ -136,6 +136,31 @@ pub struct CapabilityLimits {
     pub max_metrics_targets: Option<u32>,
 }
 
+/// agentd 的**调查能力**（`wist-agentd investigate`）。
+///
+/// 与 [`LogsCapabilities`] 同一条纪律：网关据此**在入队前**判断这台机器能不能做这次调查，
+/// 而不是把命令发下去换一个 `unsupported` / `failed` —— 后者在管理面上只会显示成
+/// 「命令失败」，而真正的原因是「这台机器不会 / 没权限」，处置完全不同。
+///
+/// 为什么单开一个结构、不并进 [`LogsCapabilities`]：调查面与采集面是**两条授权轴**
+/// （采集=持续外发内容，调查=一次性只读证据，见 `doc/design/center/investigation-surfaces.md`）。
+/// 混在一个桶里，“能不能采这类事件”与“能不能查这个问题”会互相冒充。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationCapabilities {
+    /// 本机真的实现的调查面 id（agentd 的 `investigate::TOPICS`，目前只有 `disk`）。
+    #[serde(default)]
+    pub surfaces: Vec<String>,
+    /// 是否以 root / 系统服务运行。
+    ///
+    /// 为什么必须单独一轴：同一个面在非 root 下**能跑但答不全** —— `disk` 扫不到
+    /// `/var/lib/docker`、`/root`，报告会如实标 `unreadable`。网关用这个值在界面上区分
+    /// 「完整答案」与「部分答案」，而不是让人对着一份残缺证据下结论。
+    #[serde(default)]
+    pub privileged: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +214,29 @@ mod tests {
         // 字段漂移仍要显形（与同族结构一致）。
         let drifted = r#"{"file_inputs":[],"nope":1}"#;
         assert!(serde_json::from_str::<LogsCapabilities>(drifted).is_err());
+    }
+
+    #[test]
+    fn investigation_capabilities_decode_old_and_minimal_reports() {
+        // 老 agent 不报这个桶；新 agent 报一个空对象也要能解（两个字段都有 default）。
+        let empty: InvestigationCapabilities = serde_json::from_str("{}").expect("decode");
+        assert!(empty.surfaces.is_empty());
+        assert!(!empty.privileged);
+
+        let full = InvestigationCapabilities {
+            surfaces: vec!["disk".to_string()],
+            privileged: true,
+        };
+        let json = serde_json::to_string(&full).expect("encode");
+        assert!(json.contains("disk"));
+        let back: InvestigationCapabilities = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, full);
+
+        // 字段漂移仍要显形（与同族结构一致）。
+        assert!(
+            serde_json::from_str::<InvestigationCapabilities>(r#"{"surface":[]}"#).is_err(),
+            "typos must fail loudly"
+        );
     }
 
     #[test]
