@@ -149,7 +149,10 @@ pub struct CapabilityLimits {
 #[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Contract")]
 #[serde(deny_unknown_fields)]
 pub struct InvestigationCapabilities {
-    /// 本机真的实现的调查面 id（agentd 的 `investigate::TOPICS`，目前只有 `disk`）。
+    /// 本机真的实现的调查面 id（**与 agentd 的 `investigate::TOPICS` 同源**，目前是 `disk` 与 `load`）。
+    ///
+    /// 这里故意**不**内置一份题目清单：agentd 加一题就该自动多一项，网关按本字段 ∩
+    /// 自己的允许集决定“给不给你看这道题”。
     #[serde(default)]
     pub surfaces: Vec<String>,
     /// 是否以 root / 系统服务运行。
