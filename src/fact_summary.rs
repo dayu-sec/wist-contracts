@@ -26,12 +26,15 @@
 //! - `fact-v3`：`listen_ports` 只报**稳定服务端口**且带协议前缀（`tcp:5432`），
 //!   滤掉内核临时端口区间；进程清单不再含内核线程。这两类原信号会随无关进程
 //!   生灭而抖动，等于让幂等键失效（实测一台机器 246 个监听里 220 个是噪声）。
+//! - `fact-v4`：纳入 `service_units` / `container_names`（选择类 label 的 `app` 推断输入）。
+//!   它们决定「这台机器上的指标带不带 `app`」，所以必须参与变更检测 —— 否则服务管理器
+//!   里换了单元、指标却还带着旧用途，且没有任何一层能发现。
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// 规范化算法 / 字段集的版本（见模块注释）。
-pub const FACT_DIGEST_VERSION: &str = "fact-v3";
+pub const FACT_DIGEST_VERSION: &str = "fact-v4";
 
 /// 内核临时端口区间的下界（Linux `net.ipv4.ip_local_port_range` 的默认起点）。
 ///
@@ -67,6 +70,23 @@ pub struct FactContent {
     pub probed_paths: Vec<String>,
     /// 其中**存在**的路径（`probed_paths` 的子集）。
     pub present_paths: Vec<String>,
+    /// 服务管理器里的单元标识（已归一：去掉 `systemd` 的类型后缀、小写）。
+    ///
+    /// 这是选择类 label `app` 的**高置信度证据**之一（规范 §3.4 规则 3）：
+    /// 值由部署者命名，不是从可执行名 / 端口猜出来的。空 = 没采到（不是"没有服务"）。
+    pub service_units: Vec<String>,
+    /// 容器名（k8s 里就是 pod spec 的容器名；已小写）。
+    pub container_names: Vec<String>,
+}
+
+/// 高置信度证据（`app` 推断的输入）。
+///
+/// 单独一个结构体而不是给 [`FactContent::new`] 再加两个位置参数：那串位置参数已经有 7 个，
+/// 再加两个只会让调用点变成「数不清第几个是什么」。缺省空 = 没有证据（推断留空）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FactEvidence {
+    pub service_units: Vec<String>,
+    pub container_names: Vec<String>,
 }
 
 impl FactContent {
@@ -88,7 +108,16 @@ impl FactContent {
             listen_ports,
             probed_paths,
             present_paths,
+            service_units: Vec::new(),
+            container_names: Vec::new(),
         }
+    }
+
+    /// 带上高置信度证据（`app` 推断的输入）。链式调用，既有调用点不必改。
+    pub fn with_evidence(mut self, evidence: FactEvidence) -> Self {
+        self.service_units = evidence.service_units;
+        self.container_names = evidence.container_names;
+        self
     }
 
     /// 内容摘要（形如 `fact-v3:sha256:<hex>`）。
@@ -105,6 +134,8 @@ impl FactContent {
             listen_ports: normalized(&self.listen_ports),
             probed_paths: normalized(&self.probed_paths),
             present_paths: normalized(&self.present_paths),
+            service_units: normalized(&self.service_units),
+            container_names: normalized(&self.container_names),
         };
         // 对 &str / Vec<String> 序列化不可能失败；不用 unwrap_or_default ——
         // 那会把"序列化失败"变成"空输入的常量摘要"，等于"内容永远没变"，上报永久停摆。
@@ -126,6 +157,8 @@ struct CanonicalContent<'a> {
     listen_ports: Vec<String>,
     probed_paths: Vec<String>,
     present_paths: Vec<String>,
+    service_units: Vec<String>,
+    container_names: Vec<String>,
 }
 
 fn normalized(values: &[String]) -> Vec<String> {
@@ -154,8 +187,8 @@ mod tests {
     #[test]
     fn digest_is_stable_and_versioned() {
         let digest = content(&["/usr/bin/xcodebuild"]).content_digest();
-        assert!(digest.starts_with("fact-v3:sha256:"), "{digest}");
-        assert_eq!(digest.len(), "fact-v3:sha256:".len() + 64);
+        assert!(digest.starts_with("fact-v4:sha256:"), "{digest}");
+        assert_eq!(digest.len(), "fact-v4:sha256:".len() + 64);
         // 同一内容重复计算必须一致（否则幂等键本身就不成立）。
         assert_eq!(digest, content(&["/usr/bin/xcodebuild"]).content_digest());
     }
@@ -165,6 +198,34 @@ mod tests {
         let base = content(&["b", "a"]).content_digest();
         assert_eq!(base, content(&["a", "b"]).content_digest());
         assert_eq!(base, content(&["b", "a", "a"]).content_digest());
+    }
+
+    #[test]
+    fn evidence_participates_in_the_digest() {
+        // 证据决定 `app` label，而 label 会把指标序列分段 —— 证据变了摘要必须变，
+        // 否则换掉服务管理器里的单元后，指标会永远带着旧用途，且没有任何一层能发现。
+        let base = content(&["a"]);
+        let with_unit = content(&["a"]).with_evidence(FactEvidence {
+            service_units: vec!["kafka".to_string()],
+            container_names: Vec::new(),
+        });
+        assert_ne!(base.content_digest(), with_unit.content_digest());
+
+        let with_container = content(&["a"]).with_evidence(FactEvidence {
+            service_units: Vec::new(),
+            container_names: vec!["orders-api".to_string()],
+        });
+        assert_ne!(
+            with_unit.content_digest(),
+            with_container.content_digest(),
+            "两类证据不能折叠成同一个摘要"
+        );
+        // 证据同样要归一（顺序 / 重复不影响摘要）。
+        let normalised = content(&["a"]).with_evidence(FactEvidence {
+            service_units: vec!["kafka".to_string(), "kafka".to_string()],
+            container_names: Vec::new(),
+        });
+        assert_eq!(with_unit.content_digest(), normalised.content_digest());
     }
 
     #[test]
@@ -305,8 +366,8 @@ mod tests {
             Vec::new(),
         )
         .content_digest();
-        assert!(digest.starts_with("fact-v3:sha256:"));
-        assert_eq!(digest.len(), "fact-v3:sha256:".len() + 64);
+        assert!(digest.starts_with("fact-v4:sha256:"));
+        assert_eq!(digest.len(), "fact-v4:sha256:".len() + 64);
         assert_eq!(
             digest,
             FactContent::new(

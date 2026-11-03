@@ -3,6 +3,22 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.10.0] - 2026-11-03
+
+### 变更（不兼容）
+
+- **`FactContent` 纳入高置信度证据**：新增 `service_units`（服务管理器单元，已归一）与
+  `container_names`（容器名，k8s 下即 pod spec 的容器名）。它们是选择类 label `app` 的
+  推断输入，**决定指标序列带不带 `app`**，所以必须进内容摘要 —— 证据变了而摘要不变，
+  会让指标永远带着旧用途，且没有任何一层能发现。
+- `FACT_DIGEST_VERSION`：`fact-v3` → **`fact-v4`**。升级后每台 agent 会强制重报一次
+  （这正是版本前缀要的语义），两侧版本不一致时只会记一条 `FactDigestMismatch` 告警，不拒收。
+
+### 新增
+
+- `FactEvidence`：证据的独立结构体；`FactContent::new` 签名不变，
+  需要证据时用 `with_evidence(...)` 链式补上（7 个位置参数再加两个就没人记得住顺序了）。
+
 ## [0.9.9] - 2026-10-30
 
 ### 新增
