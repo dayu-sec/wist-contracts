@@ -19,8 +19,6 @@ mod envs  {
 }
 
 mod main  {
-      bld_bins = "target/${ENV_BUILD_NAME}" ;
-      HOME_BIN = "${HOME}/bin" ;
 
     #[auto_load(entry)]
     flow __into | conf {
@@ -29,9 +27,10 @@ mod main  {
     flow conf  {
     }
 
+  // 纯 lib 仓（无二进制）：构建只到 `rust_flow.build`，没有产物要拷进 ~/bin。
+  // 模板里的 `_pub_local`（`cp target/debug/jumo-code ~/bin/`）是 bin 模板遗留，已删除。
   #[task(name="${ENV_PRJ_KEY}@build")]
-  flow ver.use | conf | rust_flow.build | @build | _pub_local {
-      gx.echo(  "${MAIN_HOME_BIN}" );
+  flow ver.use | conf | rust_flow.build | @build {
   }
   #[usage(desp="lint code")]
   flow lint | rust_flow.lint {} ;
@@ -39,11 +38,5 @@ mod main  {
   #[task(name="test")]
   flow build  |   @test  {
     gx.cmd ( "cargo test --all ${ENV_BUILD_FLAG}", log : "1" , out:"true"  );
-  }
-
-  #[task(name="pub to local")]
-  flow _pub_local   {
-    gx.cmd (  "mkdir -p ${MAIN_HOME_BIN}" );
-    gx.cmd (  "cp ${MAIN_BLD_BINS}/jumo-code ${MAIN_HOME_BIN}/"  );
   }
 }
