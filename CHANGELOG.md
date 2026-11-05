@@ -3,6 +3,18 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.10.1] - 2026-11-05
+
+### 新增
+
+- **`PodLogRef` + 信封平铺身份**（`TelemetryRecord.pod_log`）：k8s 容器日志的来源身份
+  从**日志路径**还原，不再只有一串容器 id。信封新增 `node_name` / `namespace` /
+  `pod_name` / `pod_uid` / `service` / `log_path`（`container` 沿用同一个三元组，
+  `image` 查不到时为空串）。`service` 取**容器名**：同一个 pod 可以有多个容器，用 pod 名分不出是谁。
+  全部是加性字段且空则不出现在帧里 —— Docker 记录与旧帧的字节不变。
+- **`MULTILINE_MODES` 增 `container_cri`**：按**应用自己的头部**（行首时间戳 /
+  glog / `RuntimeLogger`）切记录，不拿 CRI 的 `F` 当边界（一次事务状态输出会被拆成很多条 `F` 行）。
+
 ## [0.10.0] - 2026-11-03
 
 ### 变更（不兼容）

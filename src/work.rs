@@ -631,8 +631,17 @@ pub const FILE_INPUT_GLOB: &str = "glob";
 ///
 /// * `none` / `indented`：W1；
 /// * `mysql_slow`：MySQL slow log，`# Time:` 起块（W4）；
-/// * `postgres_csv`：PostgreSQL csvlog，**引号外**的换行才切记录（W4）。
-pub const MULTILINE_MODES: &[&str] = &["none", "indented", "mysql_slow", "postgres_csv"];
+/// * `postgres_csv`：PostgreSQL csvlog，**引号外**的换行才切记录（W4）；
+/// * `container_cri`：kubelet `/var/log/containers` 的 CRI 日志，按**应用自己的头部**
+///   （行首时间戳 / glog / `RuntimeLogger`）切记录 —— CRI 的 `F` 标记（"这一行已写完"）
+///   不能用来合并：一次事务状态输出会被写成很多条 `F` 行。
+pub const MULTILINE_MODES: &[&str] = &[
+    "none",
+    "indented",
+    "mysql_slow",
+    "postgres_csv",
+    "container_cri",
+];
 
 /// 定时导出器（`Exporter`）的**已知 ID**：协议层词表，网关 / agentd / web 三侧共用。
 ///

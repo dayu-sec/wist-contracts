@@ -26,6 +26,14 @@ pub struct TelemetryRecord {
     pub family: String,
     #[serde(default)]
     pub unit: String,
+    /// Kubernetes 容器日志的来源身份（可选，见 [`PodLogRef`]）。
+    ///
+    /// 为什么单开一个字段而不是并进 `container`：`container` 是 Docker 与 k8s **共用**的
+    /// `name/image/id` 三元组，而 namespace / pod / 节点 / 真实文件路径只对 k8s 有意义。
+    /// 合在一起会让 Docker 记录也拖一堆空字段。
+    /// **加性字段**：旧 spool / 旧帧没有它，解成 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_log: Option<PodLogRef>,
     pub body: String,
     pub file_offset: u64,
     pub file_offset_end: u64,
@@ -46,7 +54,7 @@ pub struct TelemetryRecord {
 ///
 /// `name` 是 Docker 的 `Name`（去掉前导 `/`，如 `mysql`）；`image` 是 `Config.Image`
 /// 原样（如 `bitnami/mysql:8.0`）；`id` 是容器目录名（容器重建会变，名字不变）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerRef {
     #[serde(default)]
     pub name: String,
@@ -54,6 +62,39 @@ pub struct ContainerRef {
     pub image: String,
     #[serde(default)]
     pub id: String,
+}
+
+/// Kubernetes 容器日志的来源身份：从**日志路径**还原的事实（不是从正文读出来的）。
+///
+/// 还原依据是 kubelet 建的两条路径：
+///
+/// * 软链接 `/var/log/containers/<pod>_<ns>_<container>-<容器ID>.log`；
+/// * 真实文件 `/var/log/pods/<ns>_<pod>_<podUID>/<container>/0.log`（软链接指向它）。
+///
+/// 各字段的口径：
+///
+/// * `namespace` / `pod_name` / `pod_uid` —— 身份；
+/// * `service` —— **服务标识，取容器名**（同一个 pod 可以有多个容器，用 pod 名分不出是谁）；
+/// * `node_name` —— 这台机器（pod 所在的节点）；
+/// * `log_path` —— **真实文件**路径（软链接解析后），可与 `file_offset` 对账；
+/// * `container` —— 与 Docker 侧同一个三元组；`image` 要查容器运行时，采集端暂时查不到，
+///   留空是可解释的事实（“没查到”），其余字段仍然齐。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PodLogRef {
+    #[serde(default)]
+    pub node_name: String,
+    #[serde(default)]
+    pub namespace: String,
+    #[serde(default)]
+    pub pod_name: String,
+    #[serde(default)]
+    pub pod_uid: String,
+    #[serde(default)]
+    pub service: String,
+    #[serde(default)]
+    pub log_path: String,
+    #[serde(default)]
+    pub container: ContainerRef,
 }
 
 impl TelemetryRecord {
@@ -76,6 +117,7 @@ impl TelemetryRecord {
             source_path,
             family: String::new(),
             unit: String::new(),
+            pod_log: None,
             body,
             file_offset,
             file_offset_end,
@@ -94,6 +136,15 @@ impl TelemetryRecord {
         self
     }
 
+    /// 带上 k8s 容器日志的来源身份（仅 `/var/log/containers` 那类路径有值）。
+    ///
+    /// 用链式而不是给 `new_log` 再加一组 `String`：那里已经 8 个位置参数，
+    /// 再加六个同类字符串，谁都能把 namespace 与 pod 填反。
+    pub fn with_pod_log(mut self, pod_log: Option<PodLogRef>) -> Self {
+        self.pod_log = pod_log;
+        self
+    }
+
     /// 带上**来源身份**（采集面 + 目录单元）：会进数据帧，用于「这条来自哪个面」。
     ///
     /// 用链式而不是给 `new_log` 再加两个 `String` 参数：那里已经 8 个位置参数，
@@ -108,7 +159,8 @@ impl TelemetryRecord {
 /// 数据帧信封（数据平面 TCP 帧的 JSON 信封部分，短名）。
 ///
 /// 帧完整形态为 `{envelope} LOGRAW: <正文>`；本结构只对应信封
-/// `{schema, agent, ts, seq, family?, unit?}`，正文不进 JSON、不转义。
+/// `{schema, agent, ts, seq, family?, unit?, node_name?, namespace?, pod_name?, pod_uid?,
+/// service?, log_path?, container?}`，正文不进 JSON、不转义。
 /// 字段用 `#[serde(rename)]` 映射线上短名；`agent` 向后兼容（缺省为空串）。
 ///
 /// `family` / `unit`：**采集面**（闭集，见 `doc/design/center/collection-families.md`）
@@ -127,8 +179,24 @@ pub struct DataFrame {
     pub family: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub unit: String,
+    /// k8s 容器日志的来源身份（见 [`PodLogRef`]）。平铺进信封：数据面按 `namespace` /
+    /// `service` 分派，不该再多解一层。空则**不出现在帧里**（与 `family`/`unit` 同口径）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pod_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pod_uid: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub service: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub log_path: String,
     /// 容器身份（可选，见 [`ContainerRef`]。空则**不出现在帧里**——与 `family`/`unit`
     /// 同口径：手工输入与旧帧的字节不变。
+    ///
+    /// k8s 来源的这个值来自 [`PodLogRef::container`]：同一条记录**只有一份**容器身份。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<ContainerRef>,
 }
@@ -142,7 +210,41 @@ impl From<&TelemetryRecord> for DataFrame {
             seq: record.seq,
             family: record.family.clone(),
             unit: record.unit.clone(),
-            container: record.container.clone(),
+            node_name: record
+                .pod_log
+                .as_ref()
+                .map(|pod| pod.node_name.clone())
+                .unwrap_or_default(),
+            namespace: record
+                .pod_log
+                .as_ref()
+                .map(|pod| pod.namespace.clone())
+                .unwrap_or_default(),
+            pod_name: record
+                .pod_log
+                .as_ref()
+                .map(|pod| pod.pod_name.clone())
+                .unwrap_or_default(),
+            pod_uid: record
+                .pod_log
+                .as_ref()
+                .map(|pod| pod.pod_uid.clone())
+                .unwrap_or_default(),
+            service: record
+                .pod_log
+                .as_ref()
+                .map(|pod| pod.service.clone())
+                .unwrap_or_default(),
+            log_path: record
+                .pod_log
+                .as_ref()
+                .map(|pod| pod.log_path.clone())
+                .unwrap_or_default(),
+            // 同一条记录只有一份容器身份：k8s 来源那份在 `pod_log` 里。
+            container: record
+                .container
+                .clone()
+                .or_else(|| record.pod_log.as_ref().map(|pod| pod.container.clone())),
         }
     }
 }
@@ -159,6 +261,12 @@ impl DataFrame {
             seq,
             family: String::new(),
             unit: String::new(),
+            node_name: String::new(),
+            namespace: String::new(),
+            pod_name: String::new(),
+            pod_uid: String::new(),
+            service: String::new(),
+            log_path: String::new(),
             container: None,
         }
     }
@@ -285,6 +393,128 @@ mod tests {
         let decoded: TelemetryRecord = serde_json::from_str(json).expect("deserialize");
         assert_eq!(decoded.family, "");
         assert_eq!(decoded.unit, "");
+    }
+
+    #[test]
+    fn pod_log_identity_lands_flat_in_the_frame_and_round_trips_in_the_record() {
+        let pod = super::PodLogRef {
+            node_name: "ent-bas-warpaxis-01".to_string(),
+            namespace: "default".to_string(),
+            pod_name: "doriscluster-helm-ms-2".to_string(),
+            pod_uid: "98af449f-af1b-4a19-8f82-f5f82a198794".to_string(),
+            service: "metaservice".to_string(),
+            log_path: "/var/log/pods/default_doriscluster-helm-ms-2_98af449f-af1b-4a19-8f82-f5f82a198794/metaservice/0.log".to_string(),
+            container: ContainerRef {
+                name: "metaservice".to_string(),
+                // 镜像要查容器运行时：查不到就是空串，字段仍在。
+                image: String::new(),
+                id: "ca018a1ea97ad12934aa236df87fc3c2816ea70c41a07134b1f3298c9d73e217"
+                    .to_string(),
+            },
+        };
+        let tagged = record()
+            .with_origin("ContainerWorkload", "linux-container-stdout")
+            .with_pod_log(Some(pod.clone()));
+
+        // 线上信封就是 issue 里那个形状：身份平铺，`container` 只有一份。
+        assert_eq!(
+            serde_json::to_string(&DataFrame::from(&tagged)).expect("serialize"),
+            concat!(
+                r##"{"schema":"v1","agent":"agent-001","ts":"2026-04-14T00:00:00Z","seq":7"##,
+                r##","family":"ContainerWorkload","unit":"linux-container-stdout""##,
+                r##","node_name":"ent-bas-warpaxis-01","namespace":"default""##,
+                r##","pod_name":"doriscluster-helm-ms-2""##,
+                r##","pod_uid":"98af449f-af1b-4a19-8f82-f5f82a198794""##,
+                r##","service":"metaservice""##,
+                r##","log_path":"/var/log/pods/default_doriscluster-helm-ms-2_98af449f-af1b-4a19-8f82-f5f82a198794/metaservice/0.log""##,
+                r##","container":{"name":"metaservice","image":"","id":"ca018a1ea97ad12934aa236df87fc3c2816ea70c41a07134b1f3298c9d73e217"}}"##
+            )
+        );
+
+        // spool 里也要能读回来（重启重放），且不带 `container` 以外的多余键。
+        let back: TelemetryRecord =
+            serde_json::from_str(&serde_json::to_string(&tagged).expect("serialize record"))
+                .expect("deserialize");
+        assert_eq!(back.pod_log, Some(pod));
+        assert_eq!(back.container, None);
+    }
+
+    #[test]
+    fn a_docker_record_keeps_a_single_container_identity() {
+        // Docker 来源没有 pod_log：帧里不应多出 k8s 的身份键。
+        let tagged = record().with_container(Some(ContainerRef {
+            name: "mysql".to_string(),
+            image: "bitnami/mysql:8.0".to_string(),
+            id: "0123".to_string(),
+        }));
+        let frame = DataFrame::from(&tagged);
+        assert_eq!(frame.container, tagged.container);
+        assert_eq!(frame.namespace, "");
+        assert_eq!(frame.log_path, "");
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(!json.contains("namespace"), "{json}");
+        assert!(!json.contains("log_path"), "{json}");
+    }
+
+    #[test]
+    fn a_new_frame_round_trips_back_into_the_same_identity() {
+        // 数据面 / 排障工具可能把帧再解回来：平铺的键必须能原样收回。
+        let pod = super::PodLogRef {
+            node_name: "n1".to_string(),
+            namespace: "ns".to_string(),
+            pod_name: "pod".to_string(),
+            pod_uid: "uid".to_string(),
+            service: "svc".to_string(),
+            log_path: "/var/log/pods/ns_pod_uid/svc/0.log".to_string(),
+            container: ContainerRef {
+                name: "svc".to_string(),
+                image: String::new(),
+                id: "abc".to_string(),
+            },
+        };
+        let frame = DataFrame::from(&record().with_pod_log(Some(pod)));
+        let back: DataFrame =
+            serde_json::from_str(&serde_json::to_string(&frame).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(back, frame);
+        assert_eq!(back.namespace, "ns");
+        assert_eq!(back.log_path, "/var/log/pods/ns_pod_uid/svc/0.log");
+        assert_eq!(back.container.map(|c| c.id), Some("abc".to_string()));
+    }
+
+    #[test]
+    fn an_old_frame_without_the_identity_keys_decodes_to_empty_strings() {
+        // 旧数据面 / 旧帧没有这些键：空串 = “不知道”，不能报错。
+        let frame: DataFrame = serde_json::from_str(
+            r#"{"schema":"v1","agent":"a","ts":"t","seq":1,"family":"ContainerWorkload","unit":"linux-container-stdout"}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(frame.namespace, "");
+        assert_eq!(frame.pod_name, "");
+        assert_eq!(frame.pod_uid, "");
+        assert_eq!(frame.service, "");
+        assert_eq!(frame.log_path, "");
+        assert_eq!(frame.node_name, "");
+        assert_eq!(frame.container, None);
+    }
+
+    #[test]
+    fn an_old_spool_record_without_pod_log_decodes_to_none() {
+        // 旧 spool 文件里的记录没有 `pod_log`：升级后重放不得失败。
+        let json = r#"{"schema_version":"v1","agent_id":"a","observed_at":"t","input_id":"i","source_path":"p","family":"ContainerWorkload","unit":"linux-container-stdout","body":"b","file_offset":0,"file_offset_end":1,"seq":0}"#;
+        let decoded: TelemetryRecord = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(decoded.pod_log, None);
+        assert_eq!(decoded.container, None);
+    }
+
+    #[test]
+    fn pod_log_ref_tolerates_missing_optional_keys() {
+        // 只有名字 / 命名空间也能解（其它字段为空串）—— 生产者可能只拼得出前面几个。
+        let pod: super::PodLogRef =
+            serde_json::from_str(r#"{"namespace":"ns","pod_name":"pod"}"#).expect("deserialize");
+        assert_eq!(pod.namespace, "ns");
+        assert_eq!(pod.service, "");
+        assert_eq!(pod.container, ContainerRef::default());
     }
 
     #[test]
