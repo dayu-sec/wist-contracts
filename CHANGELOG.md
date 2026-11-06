@@ -3,6 +3,15 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.10.2] - 2026-11-06
+
+### 新增
+
+- **数据帧信封新增可选 `command_id`**（`DataFrame.command_id` / `DataFrame::with_command_id`）：
+  调查报告（` IVSREP: ` 帧）把命令 id 同时放进**信封**。数据面（WPL/OML）解不了正文里的
+  JSON，计算区证据服务又需要它做幂等键 —— 只写在正文里等于没给数据面。
+  空值不出现在帧里，其它信号（日志 / 事实 / 快照）与旧帧的字节不变。
+
 ## [0.10.1] - 2026-11-05
 
 ### 新增

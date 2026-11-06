@@ -159,8 +159,8 @@ impl TelemetryRecord {
 /// 数据帧信封（数据平面 TCP 帧的 JSON 信封部分，短名）。
 ///
 /// 帧完整形态为 `{envelope} LOGRAW: <正文>`；本结构只对应信封
-/// `{schema, agent, ts, seq, family?, unit?, node_name?, namespace?, pod_name?, pod_uid?,
-/// service?, log_path?, container?}`，正文不进 JSON、不转义。
+/// `{schema, agent, ts, seq, command_id?, family?, unit?, node_name?, namespace?, pod_name?,
+/// pod_uid?, service?, log_path?, container?}`，正文不进 JSON、不转义。
 /// 字段用 `#[serde(rename)]` 映射线上短名；`agent` 向后兼容（缺省为空串）。
 ///
 /// `family` / `unit`：**采集面**（闭集，见 `doc/design/center/collection-families.md`）
@@ -175,6 +175,17 @@ pub struct DataFrame {
     #[serde(rename = "ts")]
     pub observed_at: String,
     pub seq: u64,
+    /// 调查报告（` IVSREP: ` 帧）的**命令 id**：与 ack 走控制面，两者靠它 join；
+    /// 计算区证据服务也拿它当幂等键（`cmd_id`）。
+    ///
+    /// 为什么进信封、而不是留给数据面从正文里取：正文是**原样字符串**，
+    /// 数据面（WPL/OML）没有「保留原文 + 解析 JSON」的能力 —— 用 `json(...)` 解正文
+    /// 会把 `body` 原文弄丢，而网关「主机 → 调查」页读的正是 `body`。
+    ///
+    /// 只有这类帧带值；空则**不出现在帧里**（与 `family`/`unit` 同口径：手工输入
+    /// 与旧帧逐字节不变）。与 `body.command_id` 同值，两份都是为了各自消费者不用再解一层。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub command_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub family: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -208,6 +219,9 @@ impl From<&TelemetryRecord> for DataFrame {
             agent_id: record.agent_id.clone(),
             observed_at: record.observed_at.clone(),
             seq: record.seq,
+            // 日志/事实/快照帧没有命令 id：只有 ` IVSREP: ` 帧（由 `DataFrame::new`
+            // 构造后显式赋值）才带。
+            command_id: String::new(),
             family: record.family.clone(),
             unit: record.unit.clone(),
             node_name: record
@@ -259,6 +273,7 @@ impl DataFrame {
             agent_id: agent_id.into(),
             observed_at: observed_at.into(),
             seq,
+            command_id: String::new(),
             family: String::new(),
             unit: String::new(),
             node_name: String::new(),
@@ -269,6 +284,15 @@ impl DataFrame {
             log_path: String::new(),
             container: None,
         }
+    }
+
+    /// 带上命令 id（仅调查报告 ` IVSREP: ` 帧用）。
+    ///
+    /// 用链式而不是给 `new` 再加一个参数：`new` 是信号无关的，命令 id 只有调查这条
+    /// 通道有；而且它必须在**发帧前**就确定（控制面 ack 用同一个值 join）。
+    pub fn with_command_id(mut self, command_id: impl Into<String>) -> Self {
+        self.command_id = command_id.into();
+        self
     }
 }
 
@@ -496,6 +520,8 @@ mod tests {
         assert_eq!(frame.log_path, "");
         assert_eq!(frame.node_name, "");
         assert_eq!(frame.container, None);
+        // 旧帧没有该键：解出来是空串，不是报错（升级后重放不能挂）。
+        assert_eq!(frame.command_id, "");
     }
 
     #[test]
@@ -523,5 +549,32 @@ mod tests {
         let frame: DataFrame = serde_json::from_str(json).expect("deserialize");
         assert_eq!(frame.agent_id, "");
         assert_eq!(frame.seq, 7);
+    }
+
+    #[test]
+    fn data_frame_omits_empty_command_id() {
+        // 空值不出现在帧里：手工输入与旧帧（无该键）逐字节不变。
+        let json = serde_json::to_string(&DataFrame::new("a", "t", 1)).expect("serialize");
+        assert!(!json.contains("command_id"), "{json}");
+    }
+
+    #[test]
+    fn data_frame_round_trips_command_id() {
+        // 调查报告帧：必须带上命令 id（ack 走控制面、正文走数据面，两边靠它 join）。
+        let frame = DataFrame::new("a", "t", 1).with_command_id("cmd_agent-1_refresh_1");
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(json.contains(r#""command_id":"cmd_agent-1_refresh_1""#), "{json}");
+        let back: DataFrame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.command_id, "cmd_agent-1_refresh_1");
+    }
+
+    #[test]
+    fn a_record_backed_frame_never_carries_a_command_id() {
+        // 日志 / 事实 / 快照帧都由 `TelemetryRecord` 派生：它们没有命令 id，
+        // 不能因为信封上有这个字段就凭空造一个（否则下游会把日志当成调查产物）。
+        let frame = DataFrame::from(&record());
+        assert_eq!(frame.command_id, "");
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(!json.contains("command_id"), "{json}");
     }
 }
