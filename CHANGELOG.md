@@ -3,6 +3,18 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.10.3] - 2026-11-07
+
+### 新增
+
+- **外部系统的采集来源 kind 收进契约**：新增 `CollectionSourceKind`
+  （`FileGlob` / `Exporter` / `UnifiedLogPredicate` / `MetricInterval`，
+  以及 `KafkaCluster` / `MysqlInstance` / `PostgresInstance` / `DorisCluster`），
+  配套 `capability::{COLLECT_LOGS, COLLECT_METRICS}` 与 `AUTO_TARGET`。
+  后四个域的端点**只来自 agent 本机自探**：`accepts_target` 只认 `auto`（空也兼容旧网关），
+  写具体地址一律不支持（不扩大 SSRF 面）。此前这些字符串只存在 agentd 内部，
+  网关与 agentd 各写一份，存在漂移风险。
+
 ## [0.10.2] - 2026-11-06
 
 ### 新增

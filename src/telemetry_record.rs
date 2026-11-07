@@ -563,7 +563,10 @@ mod tests {
         // 调查报告帧：必须带上命令 id（ack 走控制面、正文走数据面，两边靠它 join）。
         let frame = DataFrame::new("a", "t", 1).with_command_id("cmd_agent-1_refresh_1");
         let json = serde_json::to_string(&frame).expect("serialize");
-        assert!(json.contains(r#""command_id":"cmd_agent-1_refresh_1""#), "{json}");
+        assert!(
+            json.contains(r#""command_id":"cmd_agent-1_refresh_1""#),
+            "{json}"
+        );
         let back: DataFrame = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.command_id, "cmd_agent-1_refresh_1");
     }

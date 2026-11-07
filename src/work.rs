@@ -207,7 +207,9 @@ pub struct WorkSpecUnit {
     pub sources: Vec<WorkSpecSource>,
 }
 
-/// 采集来源：`kind` ∈ `FileGlob` | `Exporter` | `UnifiedLogPredicate` | `MetricInterval`。
+/// 采集来源：`kind` 取值见 [`CollectionSourceKind`]
+/// （`FileGlob` | `Exporter` | `UnifiedLogPredicate` | `MetricInterval`，
+/// 以及外部系统指标的 `KafkaCluster` | `MysqlInstance` | `PostgresInstance` | `DorisCluster`）。
 ///
 /// 与模型 `CollectionSource` 同形：`target` 的含义由 `kind` 决定
 /// （路径通配 / 导出器标识 / 谓词 / 周期）。
@@ -258,6 +260,98 @@ pub struct WorkSpecSource {
     /// 非空时要求 agent 支持 `LogsCapabilities.drop_if_contains`（`substring`），网关据此裁源。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drop_if_contains: Vec<String>,
+}
+
+/// 采集能力（`WorkSpecUnit.capability`）。
+///
+/// 网关按能力做派单闸门（该面至少一个 `active` 单元），agentd 按能力分派采集器。
+pub mod capability {
+    pub const COLLECT_LOGS: &str = "collect_logs";
+    pub const COLLECT_METRICS: &str = "collect_metrics";
+}
+
+/// 外部系统采集唯一支持的 `target`：端点**只能**来自 agent 本机自探。
+///
+/// 写具体地址（`10.0.0.5:5432` / `db.intra:9092`）一律不支持：那等于给网关开一个
+/// 「让任意主机去连任意地址」的 SSRF 面。要采远端库需要单独评审，不在本约定里。
+pub const AUTO_TARGET: &str = "auto";
+
+/// 采集来源 kind（`WorkSpecSource.kind`）。
+///
+/// 前四个是日志 / 通用周期来源；后四个是**外部系统指标**，与 agentd 的采集域一一对应：
+///
+/// | kind | agentd 采集域 | 说明 |
+/// |---|---|---|
+/// | `KafkaCluster` | `kafka_broker_metrics` | broker 拓扑 / 容量 / 消费组 lag |
+/// | `MysqlInstance` | `mysql_metrics` | MySQL / TiDB |
+/// | `PostgresInstance` | `pg_metrics` | PostgreSQL |
+/// | `DorisCluster` | `doris_metrics` | Doris FE（`SHOW BACKENDS`）|
+///
+/// 后四个的 `target` **只认 `auto`**（空也算，兼容旧网关），见 [`Self::accepts_target`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CollectionSourceKind {
+    FileGlob,
+    Exporter,
+    UnifiedLogPredicate,
+    MetricInterval,
+    KafkaCluster,
+    MysqlInstance,
+    PostgresInstance,
+    DorisCluster,
+}
+
+impl CollectionSourceKind {
+    pub const ALL: [Self; 8] = [
+        Self::FileGlob,
+        Self::Exporter,
+        Self::UnifiedLogPredicate,
+        Self::MetricInterval,
+        Self::KafkaCluster,
+        Self::MysqlInstance,
+        Self::PostgresInstance,
+        Self::DorisCluster,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FileGlob => "FileGlob",
+            Self::Exporter => "Exporter",
+            Self::UnifiedLogPredicate => "UnifiedLogPredicate",
+            Self::MetricInterval => "MetricInterval",
+            Self::KafkaCluster => "KafkaCluster",
+            Self::MysqlInstance => "MysqlInstance",
+            Self::PostgresInstance => "PostgresInstance",
+            Self::DorisCluster => "DorisCluster",
+        }
+    }
+
+    /// 严格匹配（kind 是协议的一部分，不做大小写折叠）。
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == text.trim())
+    }
+
+    pub fn from_source(source: &WorkSpecSource) -> Option<Self> {
+        Self::parse(&source.kind)
+    }
+
+    /// 端点是否**只**来自 agent 本机自探（`target` 只认 `auto`）。
+    pub const fn auto_target_only(self) -> bool {
+        matches!(
+            self,
+            Self::KafkaCluster | Self::MysqlInstance | Self::PostgresInstance | Self::DorisCluster
+        )
+    }
+
+    /// 这条来源是否允许在本机采集：自探域的 `target` 只能空或 `auto`，其余 kind 不看。
+    pub fn accepts_target(self, target: &str) -> bool {
+        if !self.auto_target_only() {
+            return true;
+        }
+        let target = target.trim();
+        target.is_empty() || target.eq_ignore_ascii_case(AUTO_TARGET)
+    }
 }
 
 /// 容器日志的选源根（写死，D4）。
@@ -1617,5 +1711,75 @@ mod tests {
             units: vec![unit("nope")],
         };
         assert_eq!(all_bad.metric_interval_seconds(), None);
+    }
+
+    // ── 采集来源 kind ──
+
+    #[test]
+    fn collection_source_kinds_round_trip() {
+        for kind in CollectionSourceKind::ALL {
+            assert_eq!(CollectionSourceKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(CollectionSourceKind::parse("kafkacluster"), None);
+        assert_eq!(CollectionSourceKind::parse("Nope"), None);
+    }
+
+    #[test]
+    fn only_self_discovered_domains_accept_the_auto_target() {
+        for kind in [
+            CollectionSourceKind::KafkaCluster,
+            CollectionSourceKind::MysqlInstance,
+            CollectionSourceKind::PostgresInstance,
+            CollectionSourceKind::DorisCluster,
+        ] {
+            assert!(kind.auto_target_only(), "{kind:?}");
+            assert!(kind.accepts_target("auto"), "{kind:?}");
+            assert!(kind.accepts_target(" AUTO "), "{kind:?}");
+            // 空 target 兼容旧网关（早期单元不写 target）。
+            assert!(kind.accepts_target(""), "{kind:?}");
+            // 显式地址一律不支持：那是 SSRF 面。
+            assert!(!kind.accepts_target("10.0.0.5:5432"), "{kind:?}");
+            assert!(!kind.accepts_target("db.intra:9092"), "{kind:?}");
+        }
+
+        for kind in [
+            CollectionSourceKind::FileGlob,
+            CollectionSourceKind::Exporter,
+            CollectionSourceKind::UnifiedLogPredicate,
+            CollectionSourceKind::MetricInterval,
+        ] {
+            assert!(!kind.auto_target_only(), "{kind:?}");
+            assert!(kind.accepts_target("/var/log/syslog"), "{kind:?}");
+            assert!(kind.accepts_target("15s"), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_work_unit_can_be_checked_without_matching_strings_by_hand() {
+        let unit = WorkSpecUnit {
+            unit_id: "pg-local".to_string(),
+            capability: capability::COLLECT_METRICS.to_string(),
+            rule_ref: "agent_uplink".to_string(),
+            requires_privilege: "none".to_string(),
+            sources: vec![WorkSpecSource {
+                kind: CollectionSourceKind::PostgresInstance.as_str().to_string(),
+                target: AUTO_TARGET.to_string(),
+                multiline: "none".to_string(),
+                exclude_globs: Vec::new(),
+                filters: ContainerFilters::default(),
+                drop_if_contains: Vec::new(),
+            }],
+        };
+
+        let source = &unit.sources[0];
+        assert_eq!(
+            CollectionSourceKind::from_source(source),
+            Some(CollectionSourceKind::PostgresInstance)
+        );
+        assert!(
+            CollectionSourceKind::from_source(source)
+                .expect("kind")
+                .accepts_target(&source.target)
+        );
     }
 }
