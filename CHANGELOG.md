@@ -3,6 +3,16 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.10.4] - 2026-11-08
+
+### 新增
+
+- **采集面采集结果上报**：`AgentLocalStandingWork.collection`（`AgentLocalCollection`）——
+  agentd 把每个采集面的本 tick 采集结果（`ok` / `degraded` / `failed` / `unknown` / `paused`
+  + 原因 + 观测时间）随本机工作视图上报，网关透传，管理面「Agent 工作」卡上可直接看到
+  「这个面到底采成没采成」。字段可选：旧 agentd 不报时不出现在报文里。
+- `collection_status` 常量闭集，避免两侧各写一遍字符串。
+
 ## [0.10.3] - 2026-11-07
 
 ### 新增
