@@ -27,30 +27,122 @@ pub struct AgentLocalTask {
 ///
 /// 为什么需要它：`status` / `acknowledged_version` / `tasks` 只能回答「工作收到没、
 /// 准备采哪些文件」，回答不了「**到底采成没采成**」—— 文件不存在、没权限、导出器没装、
-/// 指标目标全部失败，都不会改变前三个字段。以前这些只在目标机的日志里，
-/// 管理面看到的是一张“看起来正常”的卡。
+/// 指标目标全部失败，都不会改变前三个字段。
 ///
-/// 语义边界（避免把正常态报成故障）：
-///   · `ok` = 本 tick **没有观测到采集失败**（采集任务已生效、没有报错）。
-///     **不**意味着「这 tick 有新数据」—— 安静的日志文件本就是正常态；
-///   · `degraded` = 还有内容在采，但部分任务 / 来源 / 目标失败；
-///   · `failed` = 这个面没有可采内容，或全部任务都失败；
-///   · `unknown` = 已授权但还没有可判定的观测（指标尚无目标 / 首轮未完成）；
-///   · `paused` = 不是失败：工作被暂停，或数据面上送被关闸（待命）。
+/// **模型是多字段、正变的**（不要把它们折回单一状态）：
+///   · [`prerequisites`](Self::prerequisites)：前置条件是否具备（工具 / 依赖 / 来源 / 目标）；
+///   · [`result`](Self::result)：执行结果（成功 / 部分 / 失败 / 取消 / 待定）；
+///   · [`reasons`](Self::reasons)：为什么不是成功（结构化，不参与判定）。
+///
+/// 判定规则见 wist-agentd `docs/design/collection-status.md`。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
 #[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Protocol")]
 #[serde(deny_unknown_fields)]
 pub struct AgentLocalCollection {
-    /// 见 [`collection_status`]。
-    pub status: String,
+    /// 前置条件：见 [`collection_prerequisites`]。
+    #[serde(default)]
+    pub prerequisites: String,
+    /// 执行结果：见 [`collection_result`]。
+    #[serde(default)]
+    pub result: String,
+    /// 原因（有序，页面按顺序展示）。
+    #[serde(default)]
+    pub reasons: Vec<CollectionReason>,
     /// 本机时钟：得出这个结论的那一轮采集。
     pub observed_at: String,
-    /// 人看的说明：失败原因原样带上；`ok` 时为空。
+
+    /// **兼容字段（滚动升级期）**：旧 agentd 只报 `status` / `detail`。
+    /// 新消费方以 `result` 为准；旧消费方继续使用本字段。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status: String,
+    /// 兼容字段：旧版人看说明。新模型用 [`reasons`](Self::reasons)。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+/// 一条采集原因：不参与状态判定，只回答「为什么」。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ::jumo_derive::Jumo)]
+#[jumo(kind = "struct", domain = "Reporting", module = "Reporting.Protocol")]
+#[serde(deny_unknown_fields)]
+pub struct CollectionReason {
+    /// 见 [`collection_reason_kind`]。
+    pub kind: String,
+    /// 具体对象：工具名 / 输入 id / 指标域。
+    #[serde(default)]
+    pub subject: String,
+    /// 人看的说明。
     #[serde(default)]
     pub detail: String,
 }
 
-/// [`AgentLocalCollection::status`] 的取值（闭集）。
+/// [`AgentLocalCollection::prerequisites`] 的取值（闭集）。
+pub mod collection_prerequisites {
+    /// 工具、依赖、来源、目标都已具备。
+    pub const READY: &str = "ready";
+    /// 至少一个必备条件缺失；具体原因见 `reasons`。
+    pub const BLOCKED: &str = "blocked";
+
+    pub const ALL: &[&str] = &[READY, BLOCKED];
+}
+
+/// [`AgentLocalCollection::result`] 的取值（闭集）。
+pub mod collection_result {
+    /// 尝试过的单元全部成功，且没有软缺陷。
+    pub const SUCCESS: &str = "success";
+    /// 有内容采到，但部分单元失败/被阻塞，或有软缺陷（如截断）。
+    pub const PARTIAL: &str = "partial";
+    /// 尝试过但全部失败，或结构性错误（参数解析失败 / 零单元）。
+    pub const FAILURE: &str = "failure";
+    /// 未执行：工作暂停 / 上送关闸 / 前置条件不满足。
+    pub const CANCELLED: &str = "cancelled";
+    /// 还没有可判定的观测（首轮未完成）；不是错误，也不是取消。
+    pub const PENDING: &str = "pending";
+
+    pub const ALL: &[&str] = &[SUCCESS, PARTIAL, FAILURE, CANCELLED, PENDING];
+}
+
+/// [`CollectionReason::kind`] 的取值（闭集）。
+pub mod collection_reason_kind {
+    pub const MISSING_TOOL: &str = "missing_tool";
+    pub const MISSING_DEPENDENCY: &str = "missing_dependency";
+    pub const SOURCE_NOT_READY: &str = "source_not_ready";
+    pub const TARGET_NOT_READY: &str = "target_not_ready";
+    pub const PERMISSION: &str = "permission";
+    pub const MISSING_INPUT: &str = "missing_input";
+    pub const RUN_FAILED: &str = "run_failed";
+    pub const UNSUPPORTED: &str = "unsupported";
+    pub const TRUNCATED: &str = "truncated";
+    pub const INVALID_SPEC: &str = "invalid_spec";
+    pub const NO_UNITS: &str = "no_units";
+    pub const NO_CONTENT: &str = "no_content";
+    pub const INCOMPLETE_DATA: &str = "incomplete_data";
+    pub const PAUSED: &str = "paused";
+    pub const STANDBY: &str = "standby";
+    pub const METRIC_PARTIAL: &str = "metric_partial";
+
+    pub const ALL: &[&str] = &[
+        MISSING_TOOL,
+        MISSING_DEPENDENCY,
+        SOURCE_NOT_READY,
+        TARGET_NOT_READY,
+        PERMISSION,
+        MISSING_INPUT,
+        RUN_FAILED,
+        UNSUPPORTED,
+        TRUNCATED,
+        INVALID_SPEC,
+        NO_UNITS,
+        NO_CONTENT,
+        INCOMPLETE_DATA,
+        PAUSED,
+        STANDBY,
+        METRIC_PARTIAL,
+    ];
+}
+
+/// **兼容字段（滚动升级期）**：旧 [`AgentLocalCollection::status`] 的取值（闭集）。
+///
+/// 新代码不得再产生新的取值；新模型见 [`collection_result`] 与 [`collection_prerequisites`]。
 pub mod collection_status {
     pub const OK: &str = "ok";
     pub const DEGRADED: &str = "degraded";
@@ -166,8 +258,11 @@ mod tests {
                     startup_position: "tail".to_string(),
                 }],
                 collection: Some(AgentLocalCollection {
-                    status: collection_status::OK.to_string(),
+                    prerequisites: collection_prerequisites::READY.to_string(),
+                    result: collection_result::SUCCESS.to_string(),
+                    reasons: Vec::new(),
                     observed_at: "2026-09-27T00:00:00Z".to_string(),
+                    status: collection_status::OK.to_string(),
                     detail: String::new(),
                 }),
             }],
@@ -215,8 +310,15 @@ mod tests {
     #[test]
     fn collection_results_round_trip_and_reject_unknown_fields() {
         let collection = AgentLocalCollection {
-            status: collection_status::DEGRADED.to_string(),
+            prerequisites: collection_prerequisites::READY.to_string(),
+            result: collection_result::PARTIAL.to_string(),
+            reasons: vec![CollectionReason {
+                kind: collection_reason_kind::MISSING_INPUT.to_string(),
+                subject: "/var/log/app.log".to_string(),
+                detail: "source path does not exist".to_string(),
+            }],
             observed_at: "2026-09-27T00:00:00Z".to_string(),
+            status: collection_status::DEGRADED.to_string(),
             detail: "1/2 个采集任务失败：/var/log/app.log 不存在".to_string(),
         };
         let json = serde_json::to_string(&collection).expect("encode");
@@ -228,17 +330,71 @@ mod tests {
     }
 
     #[test]
-    fn collection_detail_defaults_to_empty_and_status_stays_open() {
-        // `detail` 是加性字段：旧 agent 不写也能解。
+    fn legacy_collection_reports_still_decode() {
+        // 旧 agentd 只报 `status` / `detail`：新字段全部缺省，不能因此拒收整份上报。
         let json = r#"{"status":"degraded","observed_at":"2026-09-27T00:00:00Z"}"#;
         let collection: AgentLocalCollection = serde_json::from_str(json).expect("decode");
         assert_eq!(collection.detail, "");
+        assert_eq!(collection.status, "degraded");
+        assert_eq!(collection.prerequisites, "");
+        assert_eq!(collection.result, "");
+        assert!(collection.reasons.is_empty());
 
-        // status 是**开放字符串**（不枚举反序列化）：未来新增状态不能让旧网关整份报文解码失败，
-        // 页面按“认不出就原样显示”兜底。
+        // status 是**开放字符串**：未来新增取值不能让旧网关整份报文解码失败。
         let json = r#"{"status":"future_state","observed_at":"t"}"#;
         let collection: AgentLocalCollection = serde_json::from_str(json).expect("open status");
         assert_eq!(collection.status, "future_state");
+    }
+
+    #[test]
+    fn new_collection_reports_decode_without_the_legacy_status() {
+        // 新 agentd 只报三字段；旧 `status` / `detail` 可缺。
+        let json = r#"{
+            "prerequisites":"blocked",
+            "result":"cancelled",
+            "reasons":[{"kind":"missing_tool","subject":"smartctl",
+                        "detail":"工具缺失：/usr/sbin/smartctl"}],
+            "observed_at":"2026-11-10T00:00:00Z"
+        }"#;
+        let collection: AgentLocalCollection = serde_json::from_str(json).expect("decode");
+        assert_eq!(collection.prerequisites, collection_prerequisites::BLOCKED);
+        assert_eq!(collection.result, collection_result::CANCELLED);
+        assert_eq!(collection.reasons.len(), 1);
+        assert_eq!(
+            collection.reasons[0].kind,
+            collection_reason_kind::MISSING_TOOL
+        );
+        assert!(collection.status.is_empty());
+        assert!(collection.detail.is_empty());
+    }
+
+    #[test]
+    fn new_collection_constants_are_closed_and_unique() {
+        for (name, all) in [
+            ("prerequisites", collection_prerequisites::ALL),
+            ("result", collection_result::ALL),
+            ("reason_kind", collection_reason_kind::ALL),
+        ] {
+            let mut sorted = all.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), all.len(), "{name} 常量不得重复");
+            for value in all {
+                assert!(!value.is_empty(), "{name} 不得有空值");
+                assert!(
+                    value
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'),
+                    "{name} 必须是 snake_case：{value}"
+                );
+            }
+        }
+        for expected in ["ready", "blocked"] {
+            assert!(collection_prerequisites::ALL.contains(&expected));
+        }
+        for expected in ["success", "partial", "failure", "cancelled", "pending"] {
+            assert!(collection_result::ALL.contains(&expected));
+        }
     }
 
     #[test]

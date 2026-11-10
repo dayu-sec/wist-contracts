@@ -3,6 +3,34 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.11.0] - 2026-11-10
+
+### 变更（采集结果改多字段正交模型）
+
+- **`AgentLocalCollection` 不再用单一 `status` 表达采集结果**，拆成三个正交字段：
+  - `prerequisites`：`ready` / `blocked` —— 前置条件（工具 / 依赖 / 来源 / 目标）是否具备；
+  - `result`：`success` / `partial` / `failure` / `cancelled` / `pending` —— 执行结果；
+  - `reasons`：`[{kind, subject, detail}]` —— 为什么不是成功；不参与状态判定。
+- 新增 `CollectionReason`，以及三个闭集模块 `collection_prerequisites` / `collection_result` /
+  `collection_reason_kind`（`missing_tool` / `missing_dependency` / `source_not_ready` /
+  `target_not_ready` / `permission` / `missing_input` / `run_failed` / `unsupported` /
+  `truncated` / `invalid_spec` / `no_units` / `no_content` / `incomplete_data` / `paused` /
+  `standby` / `metric_partial`）。
+
+### 为什么
+
+- 单一 `status` 把三件事挤在一个词里：**该不该采**、**能不能采**、**采成没采成**。
+  结果是 `smartctl: 工具缺失（装上后自动恢复）` 被报成采集失败（页面红色），
+  而它其实是前置条件不满足 —— 装上工具就自动恢复。
+
+### 兼容性
+
+- 旧字段 `status` / `detail` 保留（`serde(default)`），由新字段派生后继续输出，
+  供未升级的网关 / 中心 / 页面使用；只报旧字段的报文读取时新字段为空。
+- **新 agentd 的输出含新字段，旧网关（`deny_unknown_fields`）会拒收整份上报**：
+  升级顺序必须是 gateway / center → agentd。
+- 用结构体字面量构造 `AgentLocalCollection` 的下游需补字段。
+
 ## [0.10.4] - 2026-11-08
 
 ### 新增
