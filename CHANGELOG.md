@@ -3,6 +3,44 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.0] - 2026-11-21
+
+### 新增（关键进程指标的采集来源）
+
+- `CollectionSourceKind::KeyProcessMetrics`（第 9 类来源）：`target` 是**匹配签名列表**，
+  形如 `unit:kafka|port:9092|exe:kafka`。具体选哪些进程由 agentd 本机判定 ——
+  与 Kafka / MySQL / PG / Doris「端点/目标只来自自探」同一条纪律：授权只说**采不采**，
+  不指定主机上的具体对象。
+- `parse_key_process_target()` + `KeyProcessSignature` / `KeyProcessSignaturePrefix` /
+  `KeyProcessTargetError`，以及闭集 `KEY_PROCESS_SIGNATURE_PREFIXES`（`unit` / `exe` / `port` / `cmdline`）。
+- `CollectionSourceKind::accepts_target()` 对 `KeyProcessMetrics` 走**签名校验**：
+  未知前缀 / 空值 / 值里带空白 / `port` 越界一律拒；`auto` 在这里**不合法**
+  （它只说“自己找”，没说采什么进程）。
+- 两条在评审时补充的限制（都是“能构造出来但永远不会命中”的形态）：
+  - `exe` 的值**不得含 `/`** —— 匹配按 basename 做，`exe:/usr/bin/nginx` 永远不命中；
+  - `port` 必须是**纯十进制数字**且 1..=65535 —— `+9092` / `0x2384` 不接受
+    （`u16::from_str` 会接受前导 `+`，所以不能只靠它）。
+- `KeyProcessSignaturePrefix::ALL` 是前缀的**事实源**；`KEY_PROCESS_SIGNATURE_PREFIXES`
+  降为展示用常量，两者由单测钉住（本仓不允许两份手抄清单）。
+- 空前缀（`:kafka`）按**缺前缀**报错，不报“未知前缀”：报错要能告诉人该补什么。
+- `parse_key_process_target` 带文档示例（doctest 跑在 `cargo test` 里）。
+
+### 为什么
+
+- 逐进程指标在 0.35.0 被停采（无授权来源 + 只能上报 3 条随机样本）。要恢复就必须先能
+  “可解释地选”：由知识库枚举每类关键进程的签名，agentd 只做机械匹配。
+- 匹配面（kafka 的 exe 其实是 `java`、裸跑 JVM 只能看 cmdline）是**策展知识**，
+  写进知识库、走审定，不进代码、不进用户视野。
+- 未知前缀必须拒：一份配错的授权如果被“跳过”，现场看到的是“授权了但没数据”，
+  分不清是没装、配错、还是 agent 不支持。
+
+### 兼容性
+
+- 新增枚举变体，**下游对 `CollectionSourceKind` 做穷举 `match` 的代码需要补分支**
+  （本仓以 0.12.0 发布，不再向后兼容）。
+- 旧网关 / 旧 agentd 看到 `KeyProcessMetrics` 会当未知 kind 处理（`parse` 返回 `None`），
+  不会误采；新来源真正生效需 gateway 与 agentd 同步升级。
+
 ## [0.11.0] - 2026-11-10
 
 ### 变更（采集结果改多字段正交模型）

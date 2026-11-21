@@ -298,10 +298,14 @@ pub enum CollectionSourceKind {
     MysqlInstance,
     PostgresInstance,
     DorisCluster,
+    /// 关键进程指标：`target` 是**匹配签名列表**（`unit:` / `exe:` / `port:` / `cmdline:`），
+    /// 具体选哪些进程由 agentd 本机判定（与各外部系统“端点只来自自探”同一条纪律）。
+    /// 语法与校验见 [`parse_key_process_target`]。
+    KeyProcessMetrics,
 }
 
 impl CollectionSourceKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::FileGlob,
         Self::Exporter,
         Self::UnifiedLogPredicate,
@@ -310,6 +314,7 @@ impl CollectionSourceKind {
         Self::MysqlInstance,
         Self::PostgresInstance,
         Self::DorisCluster,
+        Self::KeyProcessMetrics,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -322,6 +327,7 @@ impl CollectionSourceKind {
             Self::MysqlInstance => "MysqlInstance",
             Self::PostgresInstance => "PostgresInstance",
             Self::DorisCluster => "DorisCluster",
+            Self::KeyProcessMetrics => "KeyProcessMetrics",
         }
     }
 
@@ -337,6 +343,10 @@ impl CollectionSourceKind {
     }
 
     /// 端点是否**只**来自 agent 本机自探（`target` 只认 `auto`）。
+    ///
+    /// **这不是“target 是否受限”的唯一谓词**：`KeyProcessMetrics` 的 `target` 同样受限
+    ///（必须是签名列表），但它不是 `auto` 型。判断“这条来源能不能吃这个 target”
+    /// **一律用 [`Self::accepts_target`]**，不要用它。
     pub const fn auto_target_only(self) -> bool {
         matches!(
             self,
@@ -344,14 +354,194 @@ impl CollectionSourceKind {
         )
     }
 
-    /// 这条来源是否允许在本机采集：自探域的 `target` 只能空或 `auto`，其余 kind 不看。
+    /// 这条来源是否允许在本机采集。
+    ///
+    /// **网关与 agentd 判定“某个 kind 能不能吃这个 target”只应调这一个函数**，
+    /// 不要再旁路用 [`Self::auto_target_only`] 拼条件 —— 那样会漏掉 `KeyProcessMetrics`。
+    ///
+    /// - 自探域（Kafka / MySQL / PG / Doris）：`target` 只能空或 `auto`；
+    /// - 关键进程指标：`target` 是签名列表，**必须能解析**（未知前缀 / 空值 / 值里带空白一律拒）；
+    /// - 其余 kind 不看（文件路径等由 [`is_executable_source`] 判）。
     pub fn accepts_target(self, target: &str) -> bool {
-        if !self.auto_target_only() {
-            return true;
+        match self {
+            Self::KafkaCluster
+            | Self::MysqlInstance
+            | Self::PostgresInstance
+            | Self::DorisCluster => {
+                let target = target.trim();
+                target.is_empty() || target.eq_ignore_ascii_case(AUTO_TARGET)
+            }
+            Self::KeyProcessMetrics => parse_key_process_target(target).is_ok(),
+            _ => true,
         }
-        let target = target.trim();
-        target.is_empty() || target.eq_ignore_ascii_case(AUTO_TARGET)
     }
+}
+
+/// 关键进程指标的匹配签名前缀（**展示用常量**）。
+///
+/// 真正的事实源是 [`KeyProcessSignaturePrefix::ALL`]；本常量只给网关的报错文案用。
+/// 两者由 `key_process_prefix_list_matches_the_enum` 钉住 —— 手写两份必漂。
+///
+/// 每一种都指向 agentd 本机能读到的一件事，不是一个可以随意解释的词：
+///
+/// | 前缀 | 比对的本机事实 | 备注 |
+/// |---|---|---|
+/// | `unit` | systemd 单元名（来自 cgroup） | 只 Linux；macOS 恒为空 |
+/// | `exe` | 可执行名 **basename** | 写全路径不合法（永远不会命中） |
+/// | `port` | 该进程持有的监听端口 | 两端都有 |
+/// | `cmdline` | `argv` 里某个 token **完全相等** | v1 只 Linux；只用于匹配、不落盘 |
+///
+/// 未知前缀**必须**被拒（返回 [`KeyProcessTargetError`]），不允许“看不懂就跳过”——
+/// 那会让一份配错的授权变成静默无数据。
+pub const KEY_PROCESS_SIGNATURE_PREFIXES: [&str; 4] = ["unit", "exe", "port", "cmdline"];
+
+/// 一条关键进程匹配签名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyProcessSignature<'a> {
+    pub prefix: KeyProcessSignaturePrefix,
+    pub value: &'a str,
+}
+
+/// 签名前缀。**严格大小写**：前缀是协议的一部分，不做折叠。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyProcessSignaturePrefix {
+    /// systemd 单元名（子串匹配、大小写不敏感）。
+    Unit,
+    /// 可执行名 basename（相等匹配、大小写不敏感）。**值不得含路径分隔符**。
+    Exe,
+    /// 监听端口（相等匹配）。
+    Port,
+    /// `argv` 中的单个 token（相等匹配）。
+    Cmdline,
+}
+
+impl KeyProcessSignaturePrefix {
+    /// 全部前缀（**事实源**）：新增一种前缀只改这里 +
+    /// [`Self::as_str`] / [`Self::parse`] 的 `match`。
+    pub const ALL: [Self; 4] = [Self::Unit, Self::Exe, Self::Port, Self::Cmdline];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unit => "unit",
+            Self::Exe => "exe",
+            Self::Port => "port",
+            Self::Cmdline => "cmdline",
+        }
+    }
+
+    /// 解析前缀（严格大小写）。从 [`Self::ALL`] 派生，不另写一份清单。
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|prefix| prefix.as_str() == text)
+    }
+}
+
+/// `KeyProcessMetrics` 的 `target` 校验失败的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyProcessTargetError {
+    /// 整个 `target` 为空（或只有空白）。
+    Empty,
+    /// `|` 之间有一段是空的（`a|b||c`、尾部 `a|`）。
+    EmptySignature,
+    /// 没有 `前缀:值` 的分隔符（例如直接写 `kafka`）。
+    MissingPrefix,
+    /// 前缀不在 [`KEY_PROCESS_SIGNATURE_PREFIXES`] 里。
+    UnknownPrefix,
+    /// 值为空（`unit:`）。
+    EmptyValue,
+    /// 值里含空白（`cmdline:java -jar`）。
+    ValueContainsWhitespace,
+    /// `exe` 的值写了路径（`exe:/usr/bin/nginx`）：它只按 **basename** 匹配，写路径永远不会命中。
+    ExeValueIsAPath,
+    /// `port` 的值不是 1..=65535 的十进制数。
+    InvalidPort,
+}
+
+impl std::fmt::Display for KeyProcessTargetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::Empty => "target 为空：至少写一条 `前缀:值`",
+            Self::EmptySignature => "`|` 之间有空段",
+            Self::MissingPrefix => "缺少 `前缀:`（合法前缀见 KEY_PROCESS_SIGNATURE_PREFIXES）",
+            Self::UnknownPrefix => "未知签名前缀（只认 unit / exe / port / cmdline）",
+            Self::EmptyValue => "`前缀:` 后面没有值",
+            Self::ValueContainsWhitespace => "值里不许有空白（cmdline 只匹配单个 token）",
+            Self::ExeValueIsAPath => "exe 只认 basename：写 `nginx`，不要写 `/usr/bin/nginx`",
+            Self::InvalidPort => "port 必须是 1..=65535 的十进制数",
+        };
+        f.write_str(text)
+    }
+}
+
+impl std::error::Error for KeyProcessTargetError {}
+
+/// 解析 `KeyProcessMetrics` 的 `target`：`unit:kafka|port:9092|exe:kafka`。
+///
+/// 语义是**或**：任一签名命中即算采到；返回顺序与书写顺序一致。
+///
+/// 规则（能把非法状态构造出来的地方一律拒，不留“尽力理解”）：
+///
+/// - 段之间用 `|`；段内是 `前缀:值`，**第一个**冒号是分隔符（`cmdline` 的值里可以有冒号）；
+/// - 段两端的空白忽略，但**值的内部不允许空白** —— `cmdline:java -jar` 是错的，
+///   它只匹配单个 token；注意 `unit: kafka`（冒号后带空格）也会被拒；
+/// - 前缀必须精确命中闭集（大小写敏感，`Unit:` 也算未知）；
+/// - `exe` 的值**不得含 `/`**：匹配按 basename 做，写全路径属于“看上去能匹配、实际永不命中”；
+/// - `port` 的值必须是 **纯十进制数字**（`+9092` / `0x2384` 都不接受）且 1..=65535；
+/// - 空 target、空段、空值、空前缀一律拒。
+///
+/// # Examples
+///
+/// ```
+/// use wist_contracts::work::{KeyProcessSignaturePrefix, parse_key_process_target};
+///
+/// let signatures = parse_key_process_target("unit:kafka|port:9092").expect("parse");
+/// assert_eq!(signatures.len(), 2);
+/// assert_eq!(signatures[0].prefix, KeyProcessSignaturePrefix::Unit);
+/// assert_eq!(signatures[1].value, "9092");
+///
+/// // 未知前缀不会被“跳过”：整条 target 不合法。
+/// assert!(parse_key_process_target("bogus:kafka").is_err());
+/// ```
+pub fn parse_key_process_target(
+    target: &str,
+) -> Result<Vec<KeyProcessSignature<'_>>, KeyProcessTargetError> {
+    if target.trim().is_empty() {
+        return Err(KeyProcessTargetError::Empty);
+    }
+    let mut signatures = Vec::new();
+    for segment in target.split('|') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            return Err(KeyProcessTargetError::EmptySignature);
+        }
+        let Some((prefix, value)) = segment.split_once(':') else {
+            return Err(KeyProcessTargetError::MissingPrefix);
+        };
+        // `:kafka` 是“缺前缀”，不是“未知前缀”：报错要能让人知道该补什么。
+        if prefix.is_empty() {
+            return Err(KeyProcessTargetError::MissingPrefix);
+        }
+        let Some(prefix) = KeyProcessSignaturePrefix::parse(prefix) else {
+            return Err(KeyProcessTargetError::UnknownPrefix);
+        };
+        if value.is_empty() {
+            return Err(KeyProcessTargetError::EmptyValue);
+        }
+        if value.chars().any(char::is_whitespace) {
+            return Err(KeyProcessTargetError::ValueContainsWhitespace);
+        }
+        if prefix == KeyProcessSignaturePrefix::Exe && value.contains('/') {
+            return Err(KeyProcessTargetError::ExeValueIsAPath);
+        }
+        // 不用 `parse::<u16>()` 单独判：它会接受 `+9092`，而那不是十进制数字序列。
+        if prefix == KeyProcessSignaturePrefix::Port
+            && !(value.bytes().all(|byte| byte.is_ascii_digit())
+                && value.parse::<u16>().is_ok_and(|port| port != 0))
+        {
+            return Err(KeyProcessTargetError::InvalidPort);
+        }
+        signatures.push(KeyProcessSignature { prefix, value });
+    }
+    Ok(signatures)
 }
 
 /// 容器日志的选源根（写死，D4）。
@@ -1752,6 +1942,210 @@ mod tests {
             assert!(kind.accepts_target("/var/log/syslog"), "{kind:?}");
             assert!(kind.accepts_target("15s"), "{kind:?}");
         }
+    }
+
+    // ── 关键进程指标的签名列表 ──
+
+    #[test]
+    fn key_process_target_parses_the_four_prefixes() {
+        let parsed = parse_key_process_target("unit:kafka|port:9092|exe:kafka").expect("parse");
+        assert_eq!(
+            parsed,
+            vec![
+                KeyProcessSignature {
+                    prefix: KeyProcessSignaturePrefix::Unit,
+                    value: "kafka",
+                },
+                KeyProcessSignature {
+                    prefix: KeyProcessSignaturePrefix::Port,
+                    value: "9092",
+                },
+                KeyProcessSignature {
+                    prefix: KeyProcessSignaturePrefix::Exe,
+                    value: "kafka",
+                },
+            ]
+        );
+    }
+
+    /// `|` 与段两端的空白是人会写的，容忍；但**值的内部**不允许空白（见下一个用例）。
+    #[test]
+    fn key_process_target_tolerates_padding_around_the_pipe() {
+        let parsed = parse_key_process_target("  unit:kafka | exe:kafka  ").expect("parse");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].value, "kafka");
+        assert_eq!(parsed[1].value, "kafka");
+    }
+
+    /// `cmdline` 的值里可以有冒号：**第一个**冒号才是分隔符。
+    #[test]
+    fn key_process_target_keeps_colons_inside_the_value() {
+        let parsed = parse_key_process_target("cmdline:app:v2.jar").expect("parse");
+        assert_eq!(parsed[0].prefix, KeyProcessSignaturePrefix::Cmdline);
+        assert_eq!(parsed[0].value, "app:v2.jar");
+    }
+
+    /// 能构造出来的非法状态必须都被拒 —— 否则就是一份“配错也静默不报”的授权。
+    #[test]
+    fn key_process_target_rejects_what_we_cannot_honour() {
+        for (target, expected) in [
+            ("", KeyProcessTargetError::Empty),
+            ("   ", KeyProcessTargetError::Empty),
+            ("kafka", KeyProcessTargetError::MissingPrefix),
+            ("bogus:kafka", KeyProcessTargetError::UnknownPrefix),
+            // 前缀大小写敏感：`Unit:` 也是未知。
+            ("Unit:kafka", KeyProcessTargetError::UnknownPrefix),
+            ("unit:", KeyProcessTargetError::EmptyValue),
+            (
+                "unit:kafka||exe:kafka",
+                KeyProcessTargetError::EmptySignature,
+            ),
+            ("unit:kafka|", KeyProcessTargetError::EmptySignature),
+            // cmdline 只匹配单个 token，写成两个词就是不合法。
+            (
+                "cmdline:java -jar",
+                KeyProcessTargetError::ValueContainsWhitespace,
+            ),
+            // 冒号后一个空格也算“值里有空白”：不猜作者到底想写什么。
+            (
+                "unit: kafka",
+                KeyProcessTargetError::ValueContainsWhitespace,
+            ),
+            // exe 按 basename 匹配，写全路径等于“看上去能中、实际永不中”。
+            ("exe:/usr/bin/nginx", KeyProcessTargetError::ExeValueIsAPath),
+            ("port:abc", KeyProcessTargetError::InvalidPort),
+            // `u16::from_str` 会接受前导 `+` / 前导零，但那不是“十进制数字序列”。
+            ("port:+9092", KeyProcessTargetError::InvalidPort),
+            ("port:0", KeyProcessTargetError::InvalidPort),
+            // 上限之外：65535 是合法上界，65536 就不够了。
+            ("port:65536", KeyProcessTargetError::InvalidPort),
+            ("port:70000", KeyProcessTargetError::InvalidPort),
+            // 空前缀是“缺前缀”，不是“未知前缀”：报错要能告诉人该补什么。
+            (":kafka", KeyProcessTargetError::MissingPrefix),
+            // 整条只有分隔符 / 段之间夹着空白。
+            ("|", KeyProcessTargetError::EmptySignature),
+            (
+                "unit:kafka | | exe:kafka",
+                KeyProcessTargetError::EmptySignature,
+            ),
+        ] {
+            assert_eq!(
+                parse_key_process_target(target).unwrap_err(),
+                expected,
+                "target={target:?}"
+            );
+        }
+    }
+
+    /// 展示用常量与枚举不能漂：手抄两份清单是本仓点过名的旧病。
+    #[test]
+    fn key_process_prefix_list_matches_the_enum() {
+        let from_enum: Vec<&str> = KeyProcessSignaturePrefix::ALL
+            .into_iter()
+            .map(KeyProcessSignaturePrefix::as_str)
+            .collect();
+        assert_eq!(from_enum, KEY_PROCESS_SIGNATURE_PREFIXES.to_vec());
+        for prefix in KeyProcessSignaturePrefix::ALL {
+            assert_eq!(
+                KeyProcessSignaturePrefix::parse(prefix.as_str()),
+                Some(prefix)
+            );
+        }
+        // 前缀严格大小写：不做折叠。
+        assert_eq!(KeyProcessSignaturePrefix::parse("Unit"), None);
+    }
+
+    /// 单条签名（不带 `|`）是最常见的写法，不能依赖“分段”那个循环顺带覆盖。
+    #[test]
+    fn key_process_target_accepts_a_single_signature() {
+        let parsed = parse_key_process_target("exe:nginx").expect("parse");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].prefix, KeyProcessSignaturePrefix::Exe);
+        assert_eq!(parsed[0].value, "nginx");
+    }
+
+    /// 端口边界：1 与 65535 合法，两端之外都不行。
+    #[test]
+    fn key_process_target_port_boundaries_are_inclusive() {
+        for target in ["port:1", "port:65535"] {
+            let parsed = parse_key_process_target(target).unwrap_or_else(|err| {
+                panic!("{target} should parse, got {err}");
+            });
+            assert_eq!(parsed[0].prefix, KeyProcessSignaturePrefix::Port);
+        }
+    }
+
+    /// 顺序保真（诊断与错误文案都按书写顺序念）；
+    /// 且 `cmdline` **不**受 `exe` 那条“不许写路径”的限制。
+    #[test]
+    fn key_process_target_preserves_order_and_allows_paths_in_cmdline() {
+        let parsed = parse_key_process_target("port:9092|cmdline:/opt/app/run.sh|unit:kafka")
+            .expect("parse");
+        let prefixes: Vec<KeyProcessSignaturePrefix> =
+            parsed.iter().map(|item| item.prefix).collect();
+        assert_eq!(
+            prefixes,
+            vec![
+                KeyProcessSignaturePrefix::Port,
+                KeyProcessSignaturePrefix::Cmdline,
+                KeyProcessSignaturePrefix::Unit,
+            ]
+        );
+        assert_eq!(parsed[1].value, "/opt/app/run.sh");
+    }
+
+    /// 错误文案会进网关报错 / 管理面，不能是空的，也不能丢掉“该改什么”。
+    #[test]
+    fn key_process_target_error_messages_say_what_to_fix() {
+        let all = [
+            KeyProcessTargetError::Empty,
+            KeyProcessTargetError::EmptySignature,
+            KeyProcessTargetError::MissingPrefix,
+            KeyProcessTargetError::UnknownPrefix,
+            KeyProcessTargetError::EmptyValue,
+            KeyProcessTargetError::ValueContainsWhitespace,
+            KeyProcessTargetError::ExeValueIsAPath,
+            KeyProcessTargetError::InvalidPort,
+        ];
+        for error in all {
+            assert!(!error.to_string().is_empty(), "{error:?} 的文案不能为空");
+        }
+        assert!(
+            KeyProcessTargetError::UnknownPrefix
+                .to_string()
+                .contains("unit")
+        );
+        assert!(
+            KeyProcessTargetError::ExeValueIsAPath
+                .to_string()
+                .contains("basename")
+        );
+        assert!(
+            KeyProcessTargetError::ValueContainsWhitespace
+                .to_string()
+                .contains("单")
+        );
+    }
+
+    /// `KeyProcessMetrics` 不是 `auto` 型：它有限制，但词不是 `auto`。
+    /// 这条钉住“以为它属于自探域”的误改。
+    #[test]
+    fn key_process_metrics_is_not_an_auto_target_kind() {
+        let kind = CollectionSourceKind::KeyProcessMetrics;
+        assert!(!kind.auto_target_only());
+        assert!(!kind.accepts_target("auto"));
+        assert!(!kind.accepts_target("AUTO"));
+    }
+
+    #[test]
+    fn key_process_metrics_only_accepts_a_parsable_signature_list() {
+        let kind = CollectionSourceKind::KeyProcessMetrics;
+        assert!(kind.accepts_target("unit:kafka"));
+        assert!(kind.accepts_target("port:9092|exe:kafka"));
+        // `auto` 是自探域的词：它只说“自己找”，没说采什么进程。
+        assert!(!kind.accepts_target("auto"));
+        assert!(!kind.accepts_target("kafka"));
+        assert!(!kind.accepts_target(""));
     }
 
     #[test]
