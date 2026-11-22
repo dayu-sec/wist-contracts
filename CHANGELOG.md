@@ -3,6 +3,56 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.14.0] - 2026-11-22
+
+### 新增（执行计划的**签发证明** `ActionPlanAttestation`）
+
+- `ActionPlan` 新增 `attestation: Option<ActionPlanAttestation>`（`#[serde(default, skip_serializing_if)]`）。
+  它回答「谁批的、批的是不是这一份」；`None` = 未签发（E2 的直发路径）。
+- `plan_digest(&ActionPlan) -> String`：`plan-v1:sha256:<hex>`。规范化靠「序列化成 Value →
+  递归排序对象键 → 紧凑输出」，**不另写镜像结构体** —— 后者一旦忘同步新字段，新字段就
+  不在摘要范围内，那是静默的安全洞。`attestation` 自身被显式排除（它是签名载体）。
+- `canonical_json(&Value) -> String`：签 / 转发 / 验三端必须算出**同一串字节**。
+- `ActionPlanAttestation`：`plan_digest` + `approval` + `risk_level` + `issued_by` + `key_id`
+  + `algorithm` + `signed_at` + `expires_at` + `signature`；`signing_payload()` = 去掉
+  `signature` 后的规范 JSON（新加字段自动进签名范围）。
+- `ActionPlanApproval { approval_id, approvers, required_approvers, approved_at }`：
+  **在签名覆盖范围内**，所以执行侧不必回头问中心也能判断「够不够人」。
+
+### 兼容性
+
+- `attestation` 是加性可选字段，旧计划仍可解析；
+- 但 `ActionPlan` 是 `deny_unknown_fields`，**旧读取方会整份拒收**带 attestation 的计划 →
+  发布序仍是「读者先发」：agentd 先能解，网关 / 中心再签；
+- 摘要前缀是 `plan-v1`：形状变了要升前缀，不要悄悄改（黄金向量在测试里）。
+- `plan_digest` 对 `args: null` 与「没有 args」**归一到同一个摘要**：两者在执行侧等价
+  （`unwrap_or(&null)`），否则一次 JSON 往返就能让同一份计划被判“内容被改过”。
+  对不带 `null` args 的计划摘要不变（黄金向量未动）。
+
+## [0.13.0] - 2026-11-22
+
+### 新增（`ActionPlanStep.args`：执行计划带参数）
+
+- `ActionPlanStep` 新增 `args: Option<serde_json::Value>`（`#[serde(default, skip_serializing_if)]`）：
+  `kind = invoke` 的参数，缺省 = 无参数。形状由各 opcode 在**执行侧**校验，
+  契约只约束「JSON 对象或 `null`」（`wist-validate` 的 `invalid_step_args`）。
+- 为什么用 `Value` 而不是强类型：`disk.cleanup.*` 与 `process.list` 没有共同字段，
+  强类型会逼出一堆互不相干的入参 struct；契约层保持中性，参数 schema 归 opcode 注册表。
+
+### 新增（`ActionPlanConstraints.allow`：路径白名单）
+
+- 新增 `ActionPlanAllow { paths: Vec<String> }` 与 `constraints.allow`（`#[serde(default)]`）。
+  需要调用方指定路径的 op（`file.stat` / `file.read_range` …）必须先过这一层。
+- **默认拒绝**：`None` / 空列表 = 什么都不许读 —— 不是“什么都可以”。
+- 路径比较在**执行侧**做（canonicalize + 前缀匹配），契约只存字符串。
+
+### 兼容性
+
+- 加性字段 + `default`：旧计划（无 `args`）仍可解析。
+- 但 `ActionPlanProgram` / `ActionPlanStep` 是 `deny_unknown_fields`，**旧读取方会整份拒收**
+  带 `args` 的新计划 → 发布序必须是「读者先发」：agentd 先能解，中心再产出。
+- 新增公共字段会破坏下游的结构体字面量，需要补 `args: None`（本批已同步 agentd / validate）。
+
 ## [0.12.0] - 2026-11-21
 
 ### 新增（关键进程指标的采集来源）
