@@ -3,6 +3,25 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.15.0] - 2026-11-26
+
+### 新增（采集来源 kind `HostFlow`）
+
+- `CollectionSourceKind::HostFlow`：主机侧流记录（对外网卡的 TCP/UDP/ICMP 五元组窗口聚合）。
+  载体是 tc + eBPF，设计见 `wist-agentd/docs/design/host-ebpf-flow-collection.md`。
+- `target` **只认空或 `auto`**：观测哪张网卡是**本机事实**，平台指定不出来。写死接口名
+  （`eth0`）一律不可执行 —— 与自探域共用 `accepts_target`，不在 `is_executable_source`
+  里另写一份判定。
+- `EXECUTABLE_SOURCE_KINDS` 追加 `HostFlow`。换载体（XDP / pod veth / conntrack）应新增
+  kind，不复用本值：不同载体的覆盖边界与计数口径不同，混在一起会让数据无法解释。
+
+### 兼容性
+
+- `CollectionSourceKind` 新增变体：下游若对该枚举写了**穷尽** `match`，编译期会要求补齐；
+  用 `matches!` / `accepts_target` 的调用点不需要改。`EXECUTABLE_SOURCE_KINDS` 是追加式增加。
+- 发布顺序仍是**读者先发**：agentd / 网关先能认这个 kind，知识库再把对应单元从 `draft`
+  翻 `active`。旧 agentd 遇到 `HostFlow` 的 `active` 单元会如实报 `unsupported`，不会静默。
+
 ## [0.14.0] - 2026-11-22
 
 ### 新增（执行计划的**签发证明** `ActionPlanAttestation`）

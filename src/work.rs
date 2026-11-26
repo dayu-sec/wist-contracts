@@ -302,10 +302,17 @@ pub enum CollectionSourceKind {
     /// 具体选哪些进程由 agentd 本机判定（与各外部系统“端点只来自自探”同一条纪律）。
     /// 语法与校验见 [`parse_key_process_target`]。
     KeyProcessMetrics,
+    /// 主机流记录：对外网卡上的 TCP/UDP/ICMP 五元组窗口聚合
+    /// （设计见 `wist-agentd/docs/design/host-ebpf-flow-collection.md`）。
+    ///
+    /// `target` 只认 `auto`（含空）：观测哪张网卡是**本机事实**，平台指定不出来。
+    /// 载体是 tc + eBPF；换载体（XDP / pod veth / conntrack）应新增 kind，不复用本值 ——
+    /// 不同载体的覆盖与计数口径不同，混在一个 kind 里会让数据无法解释。
+    HostFlow,
 }
 
 impl CollectionSourceKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::FileGlob,
         Self::Exporter,
         Self::UnifiedLogPredicate,
@@ -315,6 +322,7 @@ impl CollectionSourceKind {
         Self::PostgresInstance,
         Self::DorisCluster,
         Self::KeyProcessMetrics,
+        Self::HostFlow,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -328,6 +336,7 @@ impl CollectionSourceKind {
             Self::PostgresInstance => "PostgresInstance",
             Self::DorisCluster => "DorisCluster",
             Self::KeyProcessMetrics => "KeyProcessMetrics",
+            Self::HostFlow => "HostFlow",
         }
     }
 
@@ -342,7 +351,10 @@ impl CollectionSourceKind {
         Self::parse(&source.kind)
     }
 
-    /// 端点是否**只**来自 agent 本机自探（`target` 只认 `auto`）。
+    /// 端点 / 观测对象是否**只**来自 agent 本机自探（`target` 只认 `auto`）。
+    ///
+    /// 这里包含两类：外部系统的端点（Kafka / MySQL / PG / Doris，写地址等于给网关开
+    /// SSRF 面）与主机的本地事实（`HostFlow` 的网卡，平台根本不知道目标机器的接口名）。
     ///
     /// **这不是“target 是否受限”的唯一谓词**：`KeyProcessMetrics` 的 `target` 同样受限
     ///（必须是签名列表），但它不是 `auto` 型。判断“这条来源能不能吃这个 target”
@@ -350,7 +362,11 @@ impl CollectionSourceKind {
     pub const fn auto_target_only(self) -> bool {
         matches!(
             self,
-            Self::KafkaCluster | Self::MysqlInstance | Self::PostgresInstance | Self::DorisCluster
+            Self::KafkaCluster
+                | Self::MysqlInstance
+                | Self::PostgresInstance
+                | Self::DorisCluster
+                | Self::HostFlow
         )
     }
 
@@ -359,7 +375,7 @@ impl CollectionSourceKind {
     /// **网关与 agentd 判定“某个 kind 能不能吃这个 target”只应调这一个函数**，
     /// 不要再旁路用 [`Self::auto_target_only`] 拼条件 —— 那样会漏掉 `KeyProcessMetrics`。
     ///
-    /// - 自探域（Kafka / MySQL / PG / Doris）：`target` 只能空或 `auto`；
+    /// - 自探域（Kafka / MySQL / PG / Doris）与 `HostFlow`：`target` 只能空或 `auto`；
     /// - 关键进程指标：`target` 是签名列表，**必须能解析**（未知前缀 / 空值 / 值里带空白一律拒）；
     /// - 其余 kind 不看（文件路径等由 [`is_executable_source`] 判）。
     pub fn accepts_target(self, target: &str) -> bool {
@@ -367,7 +383,8 @@ impl CollectionSourceKind {
             Self::KafkaCluster
             | Self::MysqlInstance
             | Self::PostgresInstance
-            | Self::DorisCluster => {
+            | Self::DorisCluster
+            | Self::HostFlow => {
                 let target = target.trim();
                 target.is_empty() || target.eq_ignore_ascii_case(AUTO_TARGET)
             }
@@ -768,9 +785,12 @@ impl WorkSpec {
 /// agentd **有可能真的执行**的来源 kind（其余 kind 一律 `unsupported`，不当没看见）。
 ///
 /// 注意：kind 对了**还不够** —— 目标形态也有限制，见 [`is_executable_source`]：
-/// `FileGlob` 要是**绝对路径**（显式路径或受支持的 glob）、`Exporter` 要是**已知导出器 ID**。
-/// 只按 kind 判会把「`**` 递归」「`~` 与相对路径」「写错的导出器」当成可采，而那在采集端落不了地。
-pub const EXECUTABLE_SOURCE_KINDS: &[&str] = &["FileGlob", "MetricInterval", "Exporter"];
+/// `FileGlob` 要是**绝对路径**（显式路径或受支持的 glob）、`Exporter` 要是**已知导出器 ID**、
+/// `HostFlow` 的 `target` 只能是 `auto`（含空）。
+/// 只按 kind 判会把「`**` 递归」「`~` 与相对路径」「写错的导出器」「写死的网卡名」
+/// 当成可采，而那在采集端落不了地。
+pub const EXECUTABLE_SOURCE_KINDS: &[&str] =
+    &["FileGlob", "MetricInterval", "Exporter", "HostFlow"];
 
 /// 目标里有没有通配元字符 —— 有就说明它不是**显式单路径**。
 pub fn has_glob_meta(target: &str) -> bool {
@@ -983,6 +1003,9 @@ pub fn is_executable_source(kind: &str, target: &str) -> bool {
         "MetricInterval" => true,
         // 定时导出器：`target` 要是**已知导出器 ID**（可带 `:arg`）。未知 ID 不可执行。
         "Exporter" => is_known_exporter(target),
+        // 主机流记录：网卡只能本机自探 —— `target` 只认 `auto`（与自探域同一个谓词，
+        // 不在这里另写一份判定）。
+        "HostFlow" => CollectionSourceKind::HostFlow.accepts_target(target),
         _ => false,
     }
 }
@@ -1145,6 +1168,11 @@ mod tests {
         assert!(!is_executable_source("Exporter", "last,lastb"));
         // 还没实现的 kind：一律不可执行。
         assert!(!is_executable_source("UnifiedLogPredicate", "syspolicyd"));
+        // 主机流记录：`auto` / 空可执行；写死网卡名不可执行（与 `accepts_target` 同一个谓词）。
+        assert!(is_executable_source("HostFlow", "auto"));
+        assert!(is_executable_source("HostFlow", ""));
+        assert!(!is_executable_source("HostFlow", "eth0"));
+        assert!(!is_executable_source("HostFlow", "host_flow:eth0"));
     }
 
     #[test]
@@ -1921,6 +1949,8 @@ mod tests {
             CollectionSourceKind::MysqlInstance,
             CollectionSourceKind::PostgresInstance,
             CollectionSourceKind::DorisCluster,
+            // 主机流记录同理：网卡是本地事实，平台指定不出来。
+            CollectionSourceKind::HostFlow,
         ] {
             assert!(kind.auto_target_only(), "{kind:?}");
             assert!(kind.accepts_target("auto"), "{kind:?}");
