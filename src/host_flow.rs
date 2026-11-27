@@ -317,4 +317,176 @@ mod tests {
         let unique: BTreeSet<&&str> = PARTIAL_REASONS.iter().collect();
         assert_eq!(unique.len(), PARTIAL_REASONS.len());
     }
+
+    /// 上面的闭集测试两边都是**同一个常量**（改值也照样绿），所以另起一条按**字面量**锁。
+    ///
+    /// 这几个串是跨语言契约：数据面只搬 `body` 不建模，平台按字面量解释 ——
+    /// 在 Rust 侧改个值不会有任何编译错误，但平台会把 `in`/`out` 统计成未知方向。
+    #[test]
+    fn wire_vocabulary_literals_are_stable() {
+        assert_eq!(RECORD_SCHEMA_V1, "wist.host_flow/v1");
+        assert_eq!(SOURCE_HOST_EBPF, "host_ebpf");
+        assert_eq!(COVERAGE_HOST_PARTIAL, "host_partial");
+
+        assert_eq!(DIRECTION_IN, "in");
+        assert_eq!(DIRECTION_OUT, "out");
+        assert_eq!(DIRECTIONS, ["in", "out"].as_slice());
+
+        assert_eq!(CAPTURE_TC_INGRESS, "tc_ingress");
+        assert_eq!(CAPTURE_TC_EGRESS, "tc_egress");
+        assert_eq!(CAPTURES, ["tc_ingress", "tc_egress"].as_slice());
+
+        assert_eq!(WINDOW_SECONDS_DEFAULT, 60);
+
+        assert_eq!(PARTIAL_REASON_AGENT_START, "agent_start");
+        assert_eq!(PARTIAL_REASON_PAUSED, "paused");
+        assert_eq!(PARTIAL_REASON_INTERFACE_CHANGED, "interface_changed");
+        assert_eq!(PARTIAL_REASON_SHUTDOWN, "shutdown");
+        assert_eq!(PARTIAL_REASON_CLOCK_CHANGED, "clock_changed");
+        assert_eq!(
+            PARTIAL_REASONS,
+            [
+                "agent_start",
+                "paused",
+                "interface_changed",
+                "shutdown",
+                "clock_changed",
+            ]
+            .as_slice()
+        );
+
+        assert_eq!(WIRE_BYTES_SOURCE_WIRE_LEN, "wire_len");
+        assert_eq!(WIRE_BYTES_SOURCE_UNAVAILABLE, "unavailable");
+        assert_eq!(WIRE_BYTES_SOURCES, ["wire_len", "unavailable"].as_slice());
+    }
+
+    /// 全部可选字段都给值的记录（ICMP + `wire_bytes` + 截断窗口）。
+    fn full_record() -> HostFlowRecord {
+        HostFlowRecord {
+            icmp_type: Some("8".to_string()),
+            icmp_code: Some("0".to_string()),
+            port_unavailable: Some(true),
+            wire_bytes: Some(1514),
+            wire_bytes_source: WIRE_BYTES_SOURCE_WIRE_LEN.to_string(),
+            partial: Some(true),
+            partial_reason: Some(PARTIAL_REASON_AGENT_START.to_string()),
+            ..record()
+        }
+    }
+
+    /// 键集的**另一半分**：上一条只覆盖了「可选字段全部省略」的形态，
+    /// 新增一个可选字段在那种形态下根本看不见（它是 `None`，不出现）。
+    /// 两条合起来才能锁住 34 个键的完整契约。
+    #[test]
+    fn the_full_wire_field_set_is_exactly_the_documented_one() {
+        let value = serde_json::to_value(full_record()).expect("serialize");
+        let keys: BTreeSet<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let expected: BTreeSet<&str> = [
+            "record_schema",
+            "source",
+            "coverage",
+            "capture",
+            "collector_instance_id",
+            "host_id",
+            "host_name",
+            "kernel",
+            "ifname",
+            "ifindex",
+            "if_mac",
+            "local_addrs",
+            "direction",
+            "protocol",
+            "srcaddr",
+            "dstaddr",
+            "srcport",
+            "dstport",
+            "icmp_type",
+            "icmp_code",
+            "port_unavailable",
+            "start",
+            "end",
+            "window_seconds",
+            "packets",
+            "bytes",
+            "wire_bytes",
+            "wire_bytes_source",
+            "skb_count",
+            "gso_skb_count",
+            "truncated",
+            "dropped",
+            "partial",
+            "partial_reason",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(keys, expected);
+        assert_eq!(keys.len(), 34);
+
+        // 可选字段都有值时也要能原样读回来（`skip_serializing_if` 不能把值吃掉）。
+        let text = serde_json::to_string(&full_record()).expect("serialize");
+        let parsed: HostFlowRecord = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, full_record());
+    }
+
+    /// `deny_unknown_fields` 只管**多键**；少键得另有一条 ——
+    /// 非可选字段是「数据面/平台可以无条件读」的前提。
+    #[test]
+    fn required_fields_cannot_be_missing() {
+        let value = serde_json::to_value(record()).expect("serialize");
+        for required in [
+            "record_schema",
+            "collector_instance_id",
+            "host_id",
+            "kernel",
+            "ifname",
+            "ifindex",
+            "local_addrs",
+            "direction",
+            "protocol",
+            "srcaddr",
+            "dstaddr",
+            "srcport",
+            "dstport",
+            "start",
+            "end",
+            "window_seconds",
+            "packets",
+            "bytes",
+            "wire_bytes_source",
+            "truncated",
+            "dropped",
+        ] {
+            let mut broken = value.clone();
+            broken.as_object_mut().expect("object").remove(required);
+            let err = serde_json::from_value::<HostFlowRecord>(broken)
+                .expect_err(&format!("缺 {required} 必须拒收"));
+            assert!(err.to_string().contains(required), "{required}: {err}");
+        }
+    }
+
+    /// 设计 §6 的示例 JSON 与数据面的 fixture（`models/wpl/agent_uplink/sample.dat`）
+    /// 是同一条 —— 它就是「线上到底长什么样」。这里把它锁住：
+    /// 类型（`bytes` 是数字、`protocol`/`srcport` 是字符串）、可选字段的省略、取值。
+    #[test]
+    fn the_documented_sample_json_round_trips_unchanged() {
+        const SAMPLE: &str = r#"{"record_schema":"wist.host_flow/v1","source":"host_ebpf","coverage":"host_partial","capture":"tc_egress","collector_instance_id":"agent-host-d97e23da6111","host_id":"host-d97e23da6111","host_name":"vm-web-01","kernel":"5.15.0-91-generic","ifname":"eth0","ifindex":2,"if_mac":"52:54:00:aa:bb:cc","local_addrs":["10.118.0.14"],"direction":"out","protocol":"6","srcaddr":"10.118.0.14","dstaddr":"88.214.25.121","srcport":"50123","dstport":"443","start":1789469760,"end":1789469820,"window_seconds":60,"packets":13,"bytes":1460,"wire_bytes_source":"unavailable","skb_count":4,"gso_skb_count":1,"truncated":false,"dropped":0}"#;
+        let expected: serde_json::Value = serde_json::from_str(SAMPLE).expect("sample is json");
+        let parsed: HostFlowRecord =
+            serde_json::from_value(expected.clone()).expect("sample 应该能读成 v1 记录");
+        assert_eq!(serde_json::to_value(&parsed).expect("serialize"), expected);
+
+        // 抽查口径（类型错了这条会红）。
+        assert_eq!(parsed.protocol, "6");
+        assert_eq!(parsed.srcport, "50123");
+        assert_eq!(parsed.bytes, 1460);
+        assert_eq!(parsed.window_seconds, 60);
+        assert_eq!(parsed.direction, DIRECTION_OUT);
+        assert_eq!(parsed.capture, CAPTURE_TC_EGRESS);
+        assert_eq!(parsed.wire_bytes, None);
+    }
 }
