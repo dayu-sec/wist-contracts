@@ -11,6 +11,7 @@ pub mod enrollment;
 pub mod execution_state;
 pub mod exporter;
 pub mod fact_summary;
+pub mod host_flow;
 pub mod ingest;
 pub mod local_work;
 pub mod telemetry_record;

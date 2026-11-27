@@ -3,6 +3,30 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.16.0] - 2026-11-27
+
+### 新增（主机流记录契约 `host_flow`）
+
+- 新模块 `wist_contracts::host_flow`：`HostFlowRecord` —— ` FLOW: ` 帧的正文形状
+  （`wist.host_flow/v1`）。字段与 `wist-agentd` 的设计文档 §6 一一对应。
+- 词表常量（闭集）：`DIRECTIONS`（`in`/`out`，与云侧口径一致，不用 `ingress`/`egress`）、
+  `CAPTURES`（`tc_ingress`/`tc_egress`）、`PARTIAL_REASONS`（`agent_start`/`paused`/
+  `interface_changed`/`shutdown`/`clock_changed`）、`WIRE_BYTES_SOURCES`
+  （`wire_len`/`unavailable`）。
+- 三个消费者共用这一份形状：agentd **产出**、数据面只搬 `body` 原文不建模、
+  平台负责富化与判决。云侧身份（`instance-id`/`vpc-id`/…）与推断字段（`action`/
+  `needs_enrichment`）**不在**记录里 —— 有测试按**键名**锁死。
+- `#[serde(deny_unknown_fields)]` 是**故意的**：v1 的键集就是这一份，多一个键要么是拼错，
+  要么是没升 `record_schema` 就加字段，两种都该在消费端当场失败。
+- `Option` 字段用 `skip_serializing_if` **省略**而不是写 `null`：下游能区分
+  「这个版本/这条记录没有这个字段」与「有值但为空」。
+
+### 兼容性
+
+- **纯新增模块**，不改动任何既有类型：不升依赖、不改现有调用点。
+- 记录形状自身靠 `record_schema` 做版本闸门：加字段 = 升 `wist.host_flow/vN`，
+  不悄悄改 v1。
+
 ## [0.15.0] - 2026-11-26
 
 ### 新增（采集来源 kind `HostFlow`）
