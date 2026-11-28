@@ -119,6 +119,12 @@ pub mod collection_reason_kind {
     pub const PAUSED: &str = "paused";
     pub const STANDBY: &str = "standby";
     pub const METRIC_PARTIAL: &str = "metric_partial";
+    /// 这个采集域**本轮一个目标都没有**，而且本机也说不出原因（如这台机器上没跑容器）。
+    ///
+    /// 与 [`TARGET_NOT_READY`] 的分界：那是「该采而采不了」（有目标但没结果，或者有目标
+    /// 却一个都没选出来 —— 后者本机一定带得出原因）；这里是「本来就没有」，不算阻塞项，
+    /// 不得把整个面拉成 `partial`。
+    pub const NO_TARGETS: &str = "no_targets";
 
     pub const ALL: &[&str] = &[
         MISSING_TOOL,
@@ -137,6 +143,7 @@ pub mod collection_reason_kind {
         PAUSED,
         STANDBY,
         METRIC_PARTIAL,
+        NO_TARGETS,
     ];
 }
 

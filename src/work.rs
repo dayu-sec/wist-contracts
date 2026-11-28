@@ -286,8 +286,15 @@ pub const AUTO_TARGET: &str = "auto";
 /// | `MysqlInstance` | `mysql_metrics` | MySQL / TiDB |
 /// | `PostgresInstance` | `pg_metrics` | PostgreSQL |
 /// | `DorisCluster` | `doris_metrics` | Doris FE（`SHOW BACKENDS`）|
+/// | `KeyProcessMetrics` | `process_metrics` | 按策展签名选出的关键进程 |
+/// | `ContainerMetrics` | `container_metrics` | 容器的 cgroup / 运行时读数 |
 ///
-/// 后四个的 `target` **只认 `auto`**（空也算，兼容旧网关），见 [`Self::accepts_target`]。
+/// 这张表就是 [`Self::metric_domain`]：**域归属由单元的来源声明**，不由面名查表 ——
+/// 面是策展概念（“要看见什么”），域是运行时的命名空间；用面名查表就得每加/拆一个面
+/// 都改 agentd。
+///
+/// 自探域（Kafka / MySQL / PG / Doris / 容器）与 `HostFlow` 的 `target` **只认 `auto`**
+/// （空也算，兼容旧网关），见 [`Self::accepts_target`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CollectionSourceKind {
     FileGlob,
@@ -302,6 +309,13 @@ pub enum CollectionSourceKind {
     /// 具体选哪些进程由 agentd 本机判定（与各外部系统“端点只来自自探”同一条纪律）。
     /// 语法与校验见 [`parse_key_process_target`]。
     KeyProcessMetrics,
+    /// 容器运行指标（每容器一条序列，采集域 `container_metrics`）。
+    ///
+    /// `target` 只认 `auto`（含空）：**采哪些容器是本机事实**（发现侧扫到的容器运行时），
+    /// 平台指定不出来。载体差异（Linux 的宿主 `/proc` + cgroup / macOS 的 Docker Engine API）
+    /// 落在 agentd 的探针模式（`container.probe.mode`）与缺失项上，不换 kind ——
+    /// 两种载体观测的是**同一个对象、同一套指标名**，与 `HostFlow` 那种“换载体换覆盖”不同。
+    ContainerMetrics,
     /// 主机流记录：对外网卡上的 TCP/UDP/ICMP 五元组窗口聚合
     /// （设计见 `wist-agentd/docs/design/host-ebpf-flow-collection.md`）。
     ///
@@ -312,7 +326,7 @@ pub enum CollectionSourceKind {
 }
 
 impl CollectionSourceKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::FileGlob,
         Self::Exporter,
         Self::UnifiedLogPredicate,
@@ -322,6 +336,7 @@ impl CollectionSourceKind {
         Self::PostgresInstance,
         Self::DorisCluster,
         Self::KeyProcessMetrics,
+        Self::ContainerMetrics,
         Self::HostFlow,
     ];
 
@@ -336,6 +351,7 @@ impl CollectionSourceKind {
             Self::PostgresInstance => "PostgresInstance",
             Self::DorisCluster => "DorisCluster",
             Self::KeyProcessMetrics => "KeyProcessMetrics",
+            Self::ContainerMetrics => "ContainerMetrics",
             Self::HostFlow => "HostFlow",
         }
     }
@@ -366,6 +382,7 @@ impl CollectionSourceKind {
                 | Self::MysqlInstance
                 | Self::PostgresInstance
                 | Self::DorisCluster
+                | Self::ContainerMetrics
                 | Self::HostFlow
         )
     }
@@ -375,7 +392,7 @@ impl CollectionSourceKind {
     /// **网关与 agentd 判定“某个 kind 能不能吃这个 target”只应调这一个函数**，
     /// 不要再旁路用 [`Self::auto_target_only`] 拼条件 —— 那样会漏掉 `KeyProcessMetrics`。
     ///
-    /// - 自探域（Kafka / MySQL / PG / Doris）与 `HostFlow`：`target` 只能空或 `auto`；
+    /// - 自探域（Kafka / MySQL / PG / Doris / 容器）与 `HostFlow`：`target` 只能空或 `auto`；
     /// - 关键进程指标：`target` 是签名列表，**必须能解析**（未知前缀 / 空值 / 值里带空白一律拒）；
     /// - 其余 kind 不看（文件路径等由 [`is_executable_source`] 判）。
     pub fn accepts_target(self, target: &str) -> bool {
@@ -384,12 +401,33 @@ impl CollectionSourceKind {
             | Self::MysqlInstance
             | Self::PostgresInstance
             | Self::DorisCluster
+            | Self::ContainerMetrics
             | Self::HostFlow => {
                 let target = target.trim();
                 target.is_empty() || target.eq_ignore_ascii_case(AUTO_TARGET)
             }
             Self::KeyProcessMetrics => parse_key_process_target(target).is_ok(),
             _ => true,
+        }
+    }
+
+    /// 这个来源 kind 对应的 agentd 采集域；`None` = 它不声明指标域。
+    ///
+    /// **域归属由单元的来源声明，不由面名查表**（见枚举文档里的那张表）。agentd 的采集记账
+    /// 按它把「采成没采成」挂到域上；面改名 / 拆面不再牵动运行时。
+    ///
+    /// `MetricInterval` 刻意返回 `None`：它是**周期载体**，出现在主机 / 进程 / 容器每个指标单元里。
+    /// 主机指标单元只带它（没有别的域声明）—— 那条特例由 agentd `collection_health` 显式成文
+    /// （“无域声明的纯周期指标单元 = `host_metrics`”），而不是在这里偷偺。
+    pub const fn metric_domain(self) -> Option<&'static str> {
+        match self {
+            Self::KeyProcessMetrics => Some("process_metrics"),
+            Self::ContainerMetrics => Some("container_metrics"),
+            Self::KafkaCluster => Some("kafka_broker_metrics"),
+            Self::MysqlInstance => Some("mysql_metrics"),
+            Self::PostgresInstance => Some("pg_metrics"),
+            Self::DorisCluster => Some("doris_metrics"),
+            _ => None,
         }
     }
 }
@@ -1949,6 +1987,8 @@ mod tests {
             CollectionSourceKind::MysqlInstance,
             CollectionSourceKind::PostgresInstance,
             CollectionSourceKind::DorisCluster,
+            // 容器指标同理：采哪些容器是本机发现的事实，平台指定不出来。
+            CollectionSourceKind::ContainerMetrics,
             // 主机流记录同理：网卡是本地事实，平台指定不出来。
             CollectionSourceKind::HostFlow,
         ] {
@@ -1972,6 +2012,50 @@ mod tests {
             assert!(kind.accepts_target("/var/log/syslog"), "{kind:?}");
             assert!(kind.accepts_target("15s"), "{kind:?}");
         }
+    }
+
+    // ── 来源 → 采集域 ──
+
+    /// 域归属只能由**来源**声明：以前的 `面名 → 域` 表把策展概念漏进了运行时，
+    /// 结果是「主机指标面」里藏着一个容器域，零目标就被报成「待就绪」。
+    #[test]
+    fn metric_domains_are_declared_by_the_source_kind() {
+        for (kind, domain) in [
+            (CollectionSourceKind::KeyProcessMetrics, "process_metrics"),
+            (CollectionSourceKind::ContainerMetrics, "container_metrics"),
+            (CollectionSourceKind::KafkaCluster, "kafka_broker_metrics"),
+            (CollectionSourceKind::MysqlInstance, "mysql_metrics"),
+            (CollectionSourceKind::PostgresInstance, "pg_metrics"),
+            (CollectionSourceKind::DorisCluster, "doris_metrics"),
+        ] {
+            assert_eq!(kind.metric_domain(), Some(domain), "{kind:?}");
+        }
+
+        // 非指标来源（包括周期载体 `MetricInterval`）不声明域：
+        // 它在每个指标单元里都出现，拿它推域会把同一个面推出好几个域。
+        for kind in [
+            CollectionSourceKind::FileGlob,
+            CollectionSourceKind::Exporter,
+            CollectionSourceKind::UnifiedLogPredicate,
+            CollectionSourceKind::MetricInterval,
+            CollectionSourceKind::HostFlow,
+        ] {
+            assert_eq!(kind.metric_domain(), None, "{kind:?}");
+        }
+    }
+
+    /// 一个来源只能声明一个域，且不同来源不得撞域：采集记账按域名查结果，
+    /// 撞了就是两个来源抢同一份结论。
+    #[test]
+    fn metric_domains_are_unique_across_kinds() {
+        let domains: Vec<&str> = CollectionSourceKind::ALL
+            .into_iter()
+            .filter_map(|kind| kind.metric_domain())
+            .collect();
+        let mut unique = domains.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), domains.len(), "域重复：{domains:?}");
     }
 
     // ── 关键进程指标的签名列表 ──
