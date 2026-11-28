@@ -3,6 +3,30 @@
 本文件记录 `wist-contracts` 的所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.16.1] - 2026-11-28
+
+### 新增（采集来源 kind `ContainerMetrics`）
+
+- `CollectionSourceKind::ContainerMetrics`：容器运行指标（每个容器一条序列）。`target` **只认空或 `auto`** ——
+  采哪些容器是本机发现的事实（与 `KeyProcessMetrics` / 自探域同一条纪律）。载体差异（Linux 的
+  宿主 `/proc` + cgroup / macOS 的 Docker Engine API）**不换 kind**：两种载体观测的是同一个对象、
+  同一套指标名，差异落在 agentd 的探针模式与缺失项上。
+- `CollectionSourceKind::metric_domain()`：来源 kind → agentd 采集域的**唯一映射**。
+  `KeyProcessMetrics → process_metrics`、`ContainerMetrics → container_metrics`、
+  四个自探域 → 各自的 `*_metrics`，其余 `None`。
+
+  为什么要有它：以前 agentd 按**面名**查表得到域，于是「面里藏着一个域」（主机指标面带着容器域）
+  这种策展错配会被放大成假故障（零目标 → 待就绪）。域归属现在**只看来源**，面改名 / 拆面不再牵动运行时。
+- `MetricInterval` 刻意返回 `None`：它是**周期载体**，出现在主机 / 进程 / 容器每个指标单元里；
+  「无域声明的纯周期单元 = 主机指标」这条特例由 agentd 显式成文，不在这里偷懒。
+
+### 兼容性
+
+- `CollectionSourceKind` 新增变体：下游若对该枚举写了**穷尽** `match`，编译期会要求补齐；
+  用 `matches!` / `accepts_target` / `metric_domain()` 的调用点不需要改。`EXECUTABLE_SOURCE_KINDS` 追加式增加。
+- 按补丁版发：仓内 `wist-api` / `wist-metrics` / `wist-validate` 都不引用该枚举，`^0.16` 仍可解析，
+  **无需重发这三个 crate**。发布顺序仍是**读者先发**：agentd / 网关先能认这个 kind，知识库再把对应单元翻 `active`。
+
 ## [0.16.0] - 2026-11-27
 
 ### 新增（主机流记录契约 `host_flow`）
